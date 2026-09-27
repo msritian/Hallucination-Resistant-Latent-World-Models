@@ -1,0 +1,73 @@
+Bootstrap: docker
+From: python:3.11-slim-trixie
+
+# Environment for TD-MPC2 (pinned to third_party/tdmpc2/docker/environment.yaml) + ManiSkill3.
+# PyTorch wheels bundle the CUDA runtime; the NVIDIA driver comes from the host (HTCondor mounts it for GPU jobs).
+# Deviations from TD-MPC2's pins: numpy 2.x (required by ManiSkill3 3.0.1) and pandas 2.2.3 (numpy-2 compatible).
+#
+# Rendering: CHTC does not expose the NVIDIA Vulkan driver to containers, so SAPIEN renders with Mesa's CPU Vulkan
+# (lavapipe). Lavapipe needs Mesa >= 24.3 (VK_KHR_external_semaphore_fd), hence the Debian 13 (trixie) base.
+# Training uses state observations and never renders per step; only videos use this renderer.
+# Object assets (YCB) are baked in at /opt/maniskill.
+
+%post
+    set -e
+    # Use HTTPS for apt (plain HTTP may be blocked on build nodes); one command per line so failures stop the build.
+    sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources
+    # apt's sandbox user cannot write to /tmp inside Apptainer builds; run apt as root.
+    chmod 1777 /tmp || true
+    echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/10sandbox
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        build-essential git ffmpeg libvulkan1 vulkan-tools mesa-vulkan-drivers libegl1 libgl1 libglib2.0-0t64 \
+        libx11-6 libxext6 libxrender1 libxi6 libsm6
+    rm -rf /var/lib/apt/lists/*
+
+    # Isolated copy of the lavapipe ICD manifest (the only Vulkan driver the loader will see).
+    mkdir -p /opt/lavapipe
+    cp "$(ls /usr/share/vulkan/icd.d/lvp_icd*.json | head -1)" /opt/lavapipe/lvp_icd.json
+    export VK_ICD_FILENAMES=/opt/lavapipe/lvp_icd.json
+    export VK_DRIVER_FILES=/opt/lavapipe/lvp_icd.json
+    vulkaninfo --summary 2>&1 | grep -iE "deviceName|driverName|driverInfo|apiVersion" || true
+
+    pip install --no-cache-dir --upgrade pip
+    pip install --no-cache-dir torch==2.7.1 --index-url https://download.pytorch.org/whl/cu126
+    pip install --no-cache-dir \
+        tensordict==0.8.3 torchrl==0.8.1 \
+        gymnasium==0.29.1 \
+        hydra-core==1.3.2 hydra-submitit-launcher==1.2.0 submitit==1.5.1 omegaconf==2.3.0 \
+        termcolor==2.4.0 tqdm==4.66.4 pandas==2.2.3 h5py \
+        imageio==2.34.1 imageio-ffmpeg==0.4.9 moviepy==1.0.3 kornia==0.7.2 \
+        wandb==0.17.4 pytest rliable scipy scikit-learn
+    pip install --no-cache-dir mani_skill==3.0.1
+
+    # Fail the build now (not in a GPU job) if anything is missing.
+    python -c "import numpy, pandas, torch, tensordict, torchrl, hydra, gymnasium; print('core imports ok, numpy', numpy.__version__, 'pandas', pandas.__version__)"
+    python -c "import sapien, mani_skill.envs; print('sapien + mani_skill imports ok')"
+    # torch.compile (used by TD-MPC2) needs a C compiler; check that compilation works.
+    python -c "import torch; f = torch.compile(lambda x: x * 2 + 1); print('torch.compile ok', f(torch.ones(3)).tolist())"
+
+    # Bake object assets into the image (read-only at runtime) so no job needs to download them.
+    export MS_ASSET_DIR=/opt/maniskill
+    python -m mani_skill.utils.download_asset ycb -y
+
+    # Build-time check: create, step, and render each task on lavapipe (same code path as src/envs/lavapipe.py).
+    python -c "
+import gymnasium as gym, mani_skill.envs
+from mani_skill.envs.utils.system import backend
+backend.render_backend_name_mapping['lavapipe'] = 'pci:0000:00:00.0'
+for task in ['PushCube-v1', 'PickSingleYCB-v1', 'PegInsertionSide-v1', 'StackCube-v1']:
+    env = gym.make(task, num_envs=1, obs_mode='state', render_mode='rgb_array', sim_backend='cpu', render_backend='lavapipe')
+    env.reset(seed=0); env.step(env.action_space.sample())
+    print(task, 'ok, frame', tuple(env.render().shape))
+    env.close()
+"
+
+    pip freeze > /opt/pip-freeze.txt
+
+%environment
+    export MUJOCO_GL=egl
+    export VK_ICD_FILENAMES=/opt/lavapipe/lvp_icd.json
+    export VK_DRIVER_FILES=/opt/lavapipe/lvp_icd.json
+    export MS_ASSET_DIR=/opt/maniskill
+    export PYTHONUNBUFFERED=1

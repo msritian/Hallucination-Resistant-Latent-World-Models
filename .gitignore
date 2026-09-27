@@ -216,3 +216,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+cluster/code.tar.gz
+cluster/*.log
+cluster/*.out
+cluster/*.err
+/run/
+/*.tar.gz
+/results/
+/ycb_videos/
+/peg_videos/
+.DS_Store
+# Personal planning documents (kept local)
+/execution_final.md
+/Research_WM.md

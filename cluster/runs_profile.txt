@@ -1,0 +1,4 @@
+prof_stock_push, stock, PushCube-v1, 1, 3000, --eval_episodes 1 --video_freq 100000000 --ckpt_freq 100000000 --mirror_dir none --progress_every 500
+prof_stock_ycb, stock, PickSingleYCB-v1, 1, 3000, --eval_episodes 1 --video_freq 100000000 --ckpt_freq 100000000 --mirror_dir none --progress_every 500
+prof_grounded_ycb, grounded, PickSingleYCB-v1, 1, 3000, --eval_episodes 1 --video_freq 100000000 --ckpt_freq 100000000 --mirror_dir none --progress_every 500
+prof_stock_peg, stock, PegInsertionSide-v1, 1, 3000, --eval_episodes 1 --video_freq 100000000 --ckpt_freq 100000000 --mirror_dir none --progress_every 500

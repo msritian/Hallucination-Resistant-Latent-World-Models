@@ -1,0 +1,2 @@
+p1_stock_push_s10, stock, PushCube-v1, 10, 200000, --max_hours 3
+p1_grounded_push_s10, grounded, PushCube-v1, 10, 200000, --max_hours 3

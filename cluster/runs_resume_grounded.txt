@@ -1,0 +1,2 @@
+p4_grounded_ycb_s10, grounded, PickSingleYCB-v1, 10, 1000000, --max_hours 3 --eval_freq 50000 --video_freq 250000 --ckpt_freq 25000 --compile_mode default
+p4_grounded_peg_s10, grounded, PegInsertionSide-v1, 10, 1000000, --max_hours 3 --eval_freq 50000 --video_freq 250000 --ckpt_freq 25000 --compile_mode default
