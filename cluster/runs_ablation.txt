@@ -1,0 +1,4 @@
+abl_grounded_noaux_stack_s20, grounded_noaux, StackCube-v1, 20, 500000, --max_hours 3 --eval_freq 50000 --video_freq 500000 --ckpt_freq 25000 --compile_mode default
+abl_grounded_noaux_stack_s30, grounded_noaux, StackCube-v1, 30, 500000, --max_hours 3 --eval_freq 50000 --video_freq 500000 --ckpt_freq 25000 --compile_mode default
+abl_stock_aux_stack_s20, stock_aux, StackCube-v1, 20, 500000, --max_hours 3 --eval_freq 50000 --video_freq 500000 --ckpt_freq 25000 --compile_mode default
+abl_stock_aux_stack_s30, stock_aux, StackCube-v1, 30, 500000, --max_hours 3 --eval_freq 50000 --video_freq 500000 --ckpt_freq 25000 --compile_mode default

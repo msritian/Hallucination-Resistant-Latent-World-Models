@@ -1,0 +1,3 @@
+seed_grounded_stack_s20, grounded, StackCube-v1
+seed_stock_stack_s20, stock, StackCube-v1
+seed_grounded_ycb_s20, grounded, PickSingleYCB-v1

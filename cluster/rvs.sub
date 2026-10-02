@@ -1,0 +1,30 @@
+# Model vs simulator rollouts with the same start state and actions. One job per line of rvs_runs.txt.
+# Usage:  condor_submit rvs.sub        Output: results/rvs_<name>.tar.gz (report.md, summary.json, data.pt)
+universe = container
+container_image = file:///staging/s/smittal39/tdmpc2_v2.sif
+
+executable = rvs.sh
+arguments = $(name) $(run) $(task)
+transfer_input_files = code.tar.gz, results/$(name).tar.gz
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+stream_output = True
+stream_error = True
+transfer_output_files = rvs.tar.gz
+transfer_output_remaps = "rvs.tar.gz = results/rvs_$(name).tar.gz"
+
+log = logs/rvs_$(name).log
+output = logs/rvs_$(name).$(Cluster).out
+error = logs/rvs_$(name).$(Cluster).err
+
+requirements = (HasCHTCStaging == true)
+request_gpus = 1
+gpus_minimum_capability = 7.0
+gpus_maximum_capability = 9.0
++WantGPULab = true
++GPUJobLength = "short"
+request_cpus = 4
+request_memory = 16GB
+request_disk = 30GB
+
+queue name, run, task from rvs_runs.txt

@@ -1,0 +1,3 @@
+PickSingleYCB-v1, p4_grounded_ycb_s10, p4_stock_ycb_s10
+StackCube-v1, bk_grounded_stackcube_s10, bk_stock_stackcube_s10
+PushCube-v1, p1_grounded_push_s10, p1_stock_push_s10

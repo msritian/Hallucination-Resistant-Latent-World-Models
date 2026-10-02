@@ -1,0 +1,4 @@
+p4_grounded_ycb_s10, grounded, PickSingleYCB-v1
+p4_stock_ycb_s10, stock, PickSingleYCB-v1
+bk_grounded_stackcube_s10, grounded, StackCube-v1
+p1_grounded_push_s10, grounded, PushCube-v1

@@ -11,7 +11,7 @@ import torch
 
 from src.envs.lavapipe import register_lavapipe
 
-TASKS = ["PushCube-v1", "PickSingleYCB-v1", "PegInsertionSide-v1", "StackCube-v1", "PickCube-v1"]
+TASKS = ["PushCube-v1", "PickSingleYCB-v1", "PegInsertionSide-v1", "StackCube-v1", "PickCube-v1", "PullCubeTool-v1", "PokeCube-v1", "LiftPegUpright-v1"]
 # Tasks whose single-env default rebuilds the scene at every reset (new object / new peg shape).
 REBUILDING_TASKS = {"PickSingleYCB-v1", "PegInsertionSide-v1"}
 

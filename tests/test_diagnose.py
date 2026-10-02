@@ -16,7 +16,7 @@ def test_diagnose_runs_on_mock(tmp_path, monkeypatch):
 	monkeypatch.setitem(dg.CAL, "min_clean_samples", 5)
 	report = {name: dg.diagnose_model(_mock_agent(aux), _data(), H=5) for name, aux in [("grounded", 4), ("stock", 0)]}
 	g = report["grounded"]
-	assert set(g["per_signal"]) == {"A", "B", "E", "D", "M", "C"}
+	assert set(g["per_signal"]) == {"A", "B", "E", "D", "M", "C", "Ao", "P", "At", "Aa", "Ac", "A+Aa", "A+Ac", "A2", "A3", "A5", "A8", "A+A2", "A+A3", "A+A5", "A+A8", "A+Aa+P", "A+A5+P"}
 	for p in g["per_signal"].values():
 		for k in ("type4_latent", "type4_value"):
 			v = p[k]["auroc"]

@@ -22,6 +22,16 @@ def normalize(signals: dict, taus: dict) -> dict:
 	s = {name: x / taus[name].tau.to(x.device).view(-1, 1) for name, x in signals.items()}
 	if "A" in s and "B" in s:
 		s["C"] = torch.maximum(s["A"], s["B"])
+	# Sudden + gradual: one-step residual OR its multi-step / cumulative form (each normalized by its own tau).
+	for g in ("Aa", "Ac", "A2", "A3", "A5", "A8"):
+		if "A" in s and g in s:
+			s[f"A+{g}"] = torch.maximum(s["A"], s[g])
+	if "Ab" in s and "Acb" in s:
+		s["Ab+Acb"] = torch.maximum(s["Ab"], s["Acb"])
+	# Full Bellman audit: one-step (sudden) + multi-step (drift) + per-head residual spread (critic uncertainty).
+	for g in ("Aa", "A5"):
+		if all(k in s for k in ("A", g, "P")):
+			s[f"A+{g}+P"] = torch.maximum(torch.maximum(s["A"], s[g]), s["P"])
 	return s
 
 

@@ -33,12 +33,66 @@ def preset(name: str, grounded: bool) -> list:
 		if grounded:
 			arms += [P(horizon=12, score="trust", signal=s) for s in ("D", "M")]
 		return _dedupe(arms)
+	if name == "final":
+		# Final task performance of a trained agent: TD-MPC2's own planner (H=3), for comparing training variants.
+		return ["stock"]
 	if name == "tuning":
 		arms = [P(horizon=12, score="trust", signal="A", kappa=k, tau_pct=p)
 		        for k in (0.5, 1.0, 2.0, float("inf")) for p in TAU_PCTS]
 		arms += [P(horizon=12, score="elvis", lambda_min=lmin, lambda_max=lmax, beta=b)
 		         for lmin in (0.0, 0.5) for lmax in (0.95, 1.0) for b in (0.5, 1.0, 2.0)]
 		return arms
+	if name == "fixes":
+		# Post-hoc planner variants (2026-09-28): safer fallbacks, one-sided / training-target residuals, random control.
+		arms = ["stock", P(horizon=3, score="standard")]
+		for H in (12, 24):
+			arms += [P(horizon=H, score="standard")]
+			arms += [P(horizon=H, score="trust", signal="A", fallback=fb) for fb in ("q", "qmin", "v")]
+			arms += [P(horizon=H, score="trust", signal=s, fallback="v") for s in ("Ao", "At")]
+		arms += [P(horizon=12, score="trust", signal="A", shuffle_trust=True)]
+		arms += [P(horizon=12, score="trust", signal="A", fallback="v", kappa=k) for k in (0.25, float("inf"))]
+		return _dedupe(arms)
+	if name == "confirm":
+		# Pre-registered 2026-09-28 (execution_final.md, Phase 3): one rule chosen from the stock-YCB and grounded-Push
+		# planning diagnostics, tested closed-loop on fresh seeds. Controls: standard scoring, the original rule, and
+		# the same rule with trust randomly reassigned across candidates.
+		arms = ["stock", P(horizon=3, score="standard")]
+		for H in (12, 24):
+			arms += [P(horizon=H, score="standard"),
+			         P(horizon=H, score="trust", signal="Ao", fallback="qmin"),
+			         P(horizon=H, score="trust", signal="A")]
+		arms += [P(horizon=12, score="trust", signal="Ao", fallback="qmin", shuffle_trust=True)]
+		return _dedupe(arms)
+	if name == "structure":
+		# Why does the ELVIS-style lambda-return work? Same structure with a constant lambda (no signal) and with our
+		# residual in place of the UCB signal; plus standard scoring and our pre-registered trust rule.
+		arms = ["stock", P(horizon=3, score="standard")]
+		for H in (12, 24):
+			arms += [P(horizon=H, score="standard"),
+			         P(horizon=H, score="elvis"),
+			         P(horizon=H, score="elvis", lambda_signal="A"),
+			         P(horizon=H, score="trust", signal="Ao", fallback="qmin")]
+			arms += [P(horizon=H, score="elvis", lambda_signal="const", lambda_max=lm) for lm in (0.5, 0.8)]
+		return _dedupe(arms)
+	if name == "lambda":
+		# Pre-registered 2026-09-28 (execution_final.md, Phase 3): C1 constant lambda vs ELVIS, C2 long-horizon
+		# constant lambda vs H3, C3 optimism-residual penalty on top of constant lambda.
+		arms = ["stock", P(horizon=3, score="standard")]
+		for H in (12, 24):
+			arms += [P(horizon=H, score="standard"), P(horizon=H, score="elvis")]
+			arms += [P(horizon=H, score="elvis", lambda_signal="const", lambda_max=lm) for lm in (0.5, 0.8, 0.9)]
+			arms += [P(horizon=H, score="elvis", lambda_signal="const", lambda_max=0.8, penalty=b) for b in (0.5, 1.0)]
+		return _dedupe(arms)
+	if name == "pessimism":
+		# Pessimistic value (min over critic heads; Chang et al., ICML 2026) with standard and constant-lambda scoring,
+		# at short and long horizons.
+		arms = ["stock"]
+		for H in (3, 12, 24):
+			arms += [P(horizon=H, score="standard"), P(horizon=H, score="standard", value_agg="min")]
+		for H in (12, 24):
+			arms += [P(horizon=H, score="elvis", lambda_signal="const", lambda_max=0.8),
+			         P(horizon=H, score="elvis", lambda_signal="const", lambda_max=0.8, value_agg="min")]
+		return _dedupe(arms)
 	raise ValueError(f"unknown preset {name}")
 
 
@@ -108,10 +162,11 @@ def evaluate_arms(agent, env, arms, taus_by_pct, episodes, seed_start, out: Path
 def main(argv=None):
 	from src.envs.maniskill3 import TASKS, ManiSkill3Env
 	from src.preflight.run_preflight import collect, load_agent
+	from src.train import RUNS
 
 	p = argparse.ArgumentParser()
 	p.add_argument("--model", required=True)
-	p.add_argument("--run", choices=["stock", "grounded"], required=True)
+	p.add_argument("--run", choices=list(RUNS), required=True)
 	p.add_argument("--task", choices=TASKS, required=True)
 	p.add_argument("--preset", default="pilot")
 	p.add_argument("--out", required=True)
@@ -120,17 +175,29 @@ def main(argv=None):
 	p.add_argument("--cal_episodes", type=int, default=50)
 	p.add_argument("--cal_seed_start", type=int, default=2000)
 	p.add_argument("--beta", type=float, default=1.0)
+	p.add_argument("--taus_file", default=None,
+	               help="thresholds from a file (e.g. plan_diag's taus_candidates.json) instead of on-policy calibration")
 	args = p.parse_args(argv)
 	out = Path(args.out)
 	out.mkdir(parents=True, exist_ok=True)
 
 	agent = load_agent(args.model, args.run, args.task)
-	arms = preset(args.preset, grounded=args.run == "grounded")
-	max_h = max(a.horizon for a in arms if not isinstance(a, str))
-	print(f"Calibrating thresholds on {args.cal_episodes} episodes (windows up to H={max_h})...")
-	cal = collect(agent, args.task, args.cal_episodes, args.cal_seed_start)
-	taus = calibrate_taus(agent, cal, max_h, args.beta)
-	(out / "taus.json").write_text(json.dumps(taus, indent=1))
+	arms = preset(args.preset, grounded=RUNS[args.run]["num_aux_dynamics"] > 0)  # D/M arms need the extra heads
+	planners = [a for a in arms if not isinstance(a, str)]
+	taus = {}
+	if planners and args.taus_file:
+		taus = {int(k) if k.isdigit() else k: v for k, v in json.loads(Path(args.taus_file).read_text()).items()}
+		max_h = max(a.horizon for a in planners)
+		for pct in TAU_PCTS:  # carry the last threshold forward, as the calibrator does when data runs out
+			if pct in taus:
+				taus[pct] = {k: t + [t[-1]] * max(0, max_h - len(t)) for k, t in taus[pct].items()}
+		print(f"Thresholds from {args.taus_file}")
+	elif planners:  # thresholds are only needed for audited/ELVIS planner arms
+		max_h = max(a.horizon for a in planners)
+		print(f"Calibrating thresholds on {args.cal_episodes} episodes (windows up to H={max_h})...")
+		cal = collect(agent, args.task, args.cal_episodes, args.cal_seed_start)
+		taus = calibrate_taus(agent, cal, max_h, args.beta)
+		(out / "taus.json").write_text(json.dumps(taus, indent=1))
 	env = ManiSkill3Env(args.task, seed=args.seed_start)
 	evaluate_arms(agent, env, arms, taus, args.episodes, args.seed_start, out)
 

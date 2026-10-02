@@ -26,6 +26,7 @@ error = logs/$(name).$(Cluster).$(Process).err
 requirements = (HasCHTCStaging == true)
 request_gpus = 1
 gpus_minimum_capability = 7.0
+gpus_maximum_capability = 9.0
 +WantGPULab = true
 +GPUJobLength = "short"
 request_cpus = 4
