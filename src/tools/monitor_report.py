@@ -61,13 +61,17 @@ def diff_ci(robots: dict, a: str, b: str) -> dict:
 	return pooled_ci(per)
 
 
-def accuracy(robot: dict) -> dict:
-	"""Step-stratified AUROC of each monitor's per-step score for real plan errors (H12 arm, simulator replays)."""
+def accuracy(robot: dict, exact_only: bool = False) -> dict:
+	"""Step-stratified AUROC of each monitor's per-step score for real plan errors (H12 arm, simulator replays).
+
+	``exact_only``: only decisions where the simulator snapshot reproduced the real step exactly (error <= 1e-4)."""
 	rec = robot["arms"]["H12"]["rec"]
 	E = rec["E"]
 	lba = robot["lba"]
 	pos, neg = E > lba["eps_hall"], E <= lba["eps_clean"]
 	keep = pos | neg
+	if exact_only and len(rec["det_err"]) == E.shape[0]:
+		keep = keep & (rec["det_err"] <= 1e-4).view(-1, 1)
 	steps = torch.arange(E.shape[1]).view(1, -1).expand_as(E)
 	out = {}
 	for k in MONITORS:
@@ -95,6 +99,15 @@ def run(robots: dict) -> str:
 	rivals = [k for k in MONITORS[1:] if not math.isnan(means[k])]
 	w1 = not math.isnan(means["LBA"]) and bool(rivals) and all(means["LBA"] > means[k] for k in rivals)
 	L += ["", f"**W1 {'passed' if w1 else 'failed'}:** LBA mean AUROC above every raw monitor.", ""]
+	# amendment (2026-10-03, before the full run): the snapshot reproduced the real step only approximately on 0-3% of
+	# smoke-test steps, so W1 is also reported on exactly reproduced decisions only.
+	acc_x = {n: accuracy(r, exact_only=True) for n, r in robots.items()}
+	mx = {k: [a[k] for a in acc_x.values() if k in a and not math.isnan(a[k])] for k in MONITORS}
+	mx = {k: sum(v) / len(v) if v else float("nan") for k, v in mx.items()}
+	share = [float((r["arms"]["H12"]["rec"]["det_err"] > 1e-4).float().mean()) for r in robots.values()
+	         if len(r["arms"]["H12"]["rec"]["det_err"])]
+	L += ["W1 on exactly reproduced decisions only (mean AUROC): " + ", ".join(f"{k} {fmt(mx[k])}" for k in MONITORS) +
+	      (f". Share of decisions not reproduced exactly: {max(share):.3f} at most." if share else "."), ""]
 
 	# success table
 	arms = sorted({a for r in robots.values() for a in r["arms"]})

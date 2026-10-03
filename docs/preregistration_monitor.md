@@ -81,3 +81,13 @@ Both outcomes will be reported.
 2. **Full run** (`monitor_runs.txt`), with no code changes after the smoke job unless the smoke job fails. Any fix
    is logged here.
 3. **Analysis:** `python -m src.tools.monitor_report results/mon_*.tar.gz`.
+
+## Amendment (2026-10-03, after the smoke job, before the full run)
+
+- **Snapshot reproducibility:** replaying from a saved simulator state reproduced the real step exactly on 97–100%
+  of smoke-test steps, but not on 0–3% (max observation error 0.06; no rewind of the real episode, which is
+  guarded). The planned "< 1e-4" check therefore fails on its maximum. The real episodes and claims W2–W4 are
+  unaffected. W1 and the oracle use replays, so W1 is also reported on the exactly reproduced decisions only.
+- **Checkpoint interval:** raised from 3 h to 8 h (`monitor.sh`), because Peg needs about 7 h. This is a job
+  setting; the code is unchanged.
+- No other change. The smoke job gave no results for any claim (2 episodes per arm).

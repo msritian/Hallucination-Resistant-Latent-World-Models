@@ -12,7 +12,7 @@ mkdir -p g old
 tar -xzf "$G.tar.gz" -C g
 tar -xzf "real_$G.tar.gz" -C old
 python -m src.monitor --task "$TASK" --run grounded --model g/run/final_model.pt \
-    --episodes_file old/preflight/episodes_grounded.pt --out mon --episodes "$EPS" --cal_episodes "$CAL" --max_hours 3
+    --episodes_file old/preflight/episodes_grounded.pt --out mon --episodes "$EPS" --cal_episodes "$CAL" --max_hours 8
 status=$?
 if [ "$status" -eq 85 ]; then
     exit 85
