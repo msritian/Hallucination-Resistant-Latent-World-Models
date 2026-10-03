@@ -1,0 +1,11 @@
+mon_p1_grounded_push_s10, PushCube-v1, p1_grounded_push_s10, 100, 10
+mon_seed_grounded_push_s40, PushCube-v1, seed_grounded_push_s40, 100, 10
+mon_bk_grounded_stackcube_s10, StackCube-v1, bk_grounded_stackcube_s10, 100, 10
+mon_seed_grounded_stack_s20, StackCube-v1, seed_grounded_stack_s20, 100, 10
+mon_seed_grounded_stack_s30, StackCube-v1, seed_grounded_stack_s30, 100, 10
+mon_seed_grounded_stack_s40, StackCube-v1, seed_grounded_stack_s40, 100, 10
+mon_p4_grounded_ycb_s10, PickSingleYCB-v1, p4_grounded_ycb_s10, 100, 10
+mon_seed_grounded_ycb_s20, PickSingleYCB-v1, seed_grounded_ycb_s20, 100, 10
+mon_seed_grounded_ycb_s30, PickSingleYCB-v1, seed_grounded_ycb_s30, 100, 10
+mon_seed_grounded_ycb_s40, PickSingleYCB-v1, seed_grounded_ycb_s40, 100, 10
+mon_p4_grounded_peg_s10, PegInsertionSide-v1, p4_grounded_peg_s10, 100, 10

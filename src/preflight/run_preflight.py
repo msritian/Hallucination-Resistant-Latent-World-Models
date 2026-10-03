@@ -111,8 +111,18 @@ def rollout_signals(agent, z_real, actions, beta: float, inject=None, bias=None)
 
 	``bias`` [H]: the critic's typical signed residual on correct steps (from calibration). When given, adds the
 	bias-corrected residuals Ab (one step) and Acb (cumulative)."""
+	sig, roll = plan_signals(agent, z_real[0], actions, beta, inject=inject, bias=bias)
+	err = (roll.z[1:] - z_real[1:]).norm(dim=-1)
+	return sig, err, roll
+
+
+@torch.no_grad()
+def plan_signals(agent, z0, actions, beta: float, inject=None, bias=None):
+	"""All signals [H, M] and the rollout for imagined rollouts from z0 [M, d] along actions [H, M, A].
+
+	Needs only the start latent, so it also scores plans the robot has not executed (run-time monitoring)."""
 	cfg, model = agent.cfg, agent.model
-	roll = audit_rollout(model, cfg, z_real[0], actions, float(agent.discount), inject=inject)
+	roll = audit_rollout(model, cfg, z0, actions, float(agent.discount), inject=inject)
 	sig = {
 		"A": roll.delta.squeeze(-1),
 		"B": roll.critic_spread().squeeze(-1),
@@ -135,8 +145,7 @@ def rollout_signals(agent, z_real, actions, beta: float, inject=None, bias=None)
 		heads = agent.aux_dynamics_heads()
 		sig["D"] = dynamics_disagreement(heads, roll.z, actions).squeeze(-1)
 		sig["M"] = bellman_target_spread(heads, model, cfg, roll, actions).squeeze(-1)
-	err = (roll.z[1:] - z_real[1:]).norm(dim=-1)
-	return sig, err, roll
+	return sig, roll
 
 
 def value_fn(agent, z):
@@ -380,6 +389,45 @@ def _features(sig: dict, roll, keys, L: int, critic_extras: bool) -> torch.Tenso
 	return torch.stack(cols, -1).reshape(L * M, -1)
 
 
+def make_gbt():
+	"""The tree reader of the learned Bellman audit (hyperparameters fixed 2026-09-30)."""
+	from sklearn.ensemble import HistGradientBoostingClassifier
+	return HistGradientBoostingClassifier(max_iter=200, learning_rate=0.05, max_leaf_nodes=15,
+	                                      l2_regularization=1.0, class_weight="balanced", random_state=0)
+
+
+def calibration_bias(agent, z, actions, beta: float, H: int) -> torch.Tensor:
+	"""The critic's typical signed residual per step [H] on ground-truth-clean replays (as in evaluate_model)."""
+	with torch.no_grad():
+		_, err, roll = rollout_signals(agent, z, actions, beta)
+	err = err.cpu()
+	clean = clean_prefix_mask(err, error_thresholds(err, CAL["eps_clean_pct"], CAL["eps_hall_pct"]).eps_clean)
+	signed = roll.signed_residual().squeeze(-1).cpu()
+	return torch.stack([signed[t][clean[t]].median() if clean[t].any() else signed[t].median() for t in range(H)])
+
+
+def fit_lba(agent, data: dict, H: int, beta: float, episode_ids=None) -> dict:
+	"""Fit the learned Bellman audit on real episodes (same features, labels and trees as ``learned_audits``).
+
+	Returns bias [H] (for Ab, Acb), the fitted trees, and the label thresholds on the return error."""
+	episode_ids = list(range(data["obs"].shape[0])) if episode_ids is None else list(episode_ids)
+	dev = next(agent.model.parameters()).device
+	o, a, _ = windows(data, H, episode_ids)
+	with torch.no_grad():
+		z = agent.model.encode(o.to(dev), None)
+		bias = calibration_bias(agent, z, a.to(dev), beta, H)
+		sig, _, roll = rollout_signals(agent, z, a.to(dev), beta, bias=bias)
+	E = return_error(roll, reward_windows(data, H, episode_ids), float(agent.discount))
+	L = E.shape[0]
+	e1 = E[0].flatten().float()
+	eps_clean, eps_hall = torch.quantile(e1, 0.9).item(), torch.quantile(e1, 0.99).item()
+	y = (E > eps_hall).reshape(-1)
+	keep = ((E > eps_hall) | (E <= eps_clean)).reshape(-1)
+	X = _features({k: v.cpu() for k, v in sig.items()}, roll, CRITIC_FEATURES, L, True)[keep].numpy()
+	clf = make_gbt().fit(X, y[keep].numpy())
+	return dict(bias=bias, clf=clf, eps_clean=eps_clean, eps_hall=eps_hall, L=L, n_pos=int(y[keep].sum()))
+
+
 def learned_audits(sig_cal: dict, roll_cal, E_cal, sig_ev: dict, roll_ev, E_shape) -> dict:
 	"""Learned detectors of REAL errors, fitted on the calibration half only (hyperparameters fixed 2026-09-30).
 
@@ -405,8 +453,7 @@ def learned_audits(sig_cal: dict, roll_cal, E_cal, sig_ev: dict, roll_ev, E_shap
 	keep = ((E_cal > eps_hall) | (E_cal <= eps_clean)).reshape(-1)
 	if y[keep].sum() < 5:
 		return {}
-	gbt = lambda: HistGradientBoostingClassifier(max_iter=200, learning_rate=0.05, max_leaf_nodes=15,
-	                                             l2_regularization=1.0, class_weight="balanced", random_state=0)
+	gbt = make_gbt
 	lin = lambda: make_pipeline(StandardScaler(), LogisticRegression(C=1.0, class_weight="balanced", max_iter=2000))
 	specs = {"LBA": (CRITIC_FEATURES, True, gbt), "LBA_lin": (CRITIC_FEATURES, True, lin)}
 	if all(k in sig_cal for k in ENSEMBLE_FEATURES):

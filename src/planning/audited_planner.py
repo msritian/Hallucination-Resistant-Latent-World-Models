@@ -200,6 +200,7 @@ class AuditedPlanner:
 		self.last_pool = dict(actions=actions.clone(), value=value.clone())  # final MPPI iteration (for diagnostics)
 		rand_idx = math.gumbel_softmax_sample(score.squeeze(1))
 		chosen = torch.index_select(elite_actions, 1, rand_idx).squeeze(1)
+		self.last_plan = chosen.clone()  # [H, A]: the full plan the executed action comes from (run-time monitoring)
 		a, std0 = chosen[0], std[0]
 		if not eval_mode:
 			a = a + std0 * torch.randn(A, device=self.device)
