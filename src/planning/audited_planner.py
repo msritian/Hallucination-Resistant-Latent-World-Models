@@ -16,11 +16,17 @@ import torch
 import src.tdmpc2_path  # noqa: F401
 from common import math
 from src.auditor.elvis import RunningNorm, elvis_lambdas, elvis_return
-from src.auditor.signals import audit_rollout, bellman_target_spread, decode, dynamics_disagreement, pi_mean, q_heads
+from src.auditor.signals import (audit_rollout, bellman_target_spread, decode, dynamics_disagreement, pi_mean, q_heads,
+                                 training_target_residual)
 from src.auditor.trust import effective_horizon, trust_weighted_return, trust_weights
 
 SCORES = ("standard", "trust", "elvis")
-SIGNALS = ("A", "B", "C", "D", "E", "M")
+SIGNALS = ("A", "B", "C", "D", "E", "M", "Ao", "P", "At")
+# What the score falls back on where trust is lost at step t:
+#   q    mean-head Q(z_t, a_t)  (original; a_t is an MPPI candidate the critic may never have seen)
+#   qmin min-head  Q(z_t, a_t)  (pessimistic over the critic ensemble)
+#   v    mean-head Q(z_t, mu_pi(z_t))  (in-distribution action; does not credit a_t)
+FALLBACKS = ("q", "qmin", "v")
 
 
 @dataclass
@@ -33,18 +39,46 @@ class PlannerConfig:
 	beta: float = 1.0          # UCB weight for Signal E and ELVIS
 	lambda_min: float = 0.0    # ELVIS
 	lambda_max: float = 1.0    # ELVIS
+	fallback: str = "q"
+	shuffle_trust: bool = False  # control: trust weights randomly reassigned across candidates (same H_eff distribution)
+	lambda_signal: str = "ucb"   # ELVIS lambda from: ucb (ELVIS), const (lambda_max everywhere), A (our residual, same mapping)
+	value_agg: str = "mean"      # critic heads -> value: mean, or min (pessimistic; Chang et al., ICML 2026)
+	penalty: float = 0.0         # lambda-return minus penalty * optimistic residual (weighted like the return's own steps)
 
 	def name(self) -> str:
+		vmin = "_vmin" if self.value_agg == "min" else ""
 		if self.score == "standard":
-			return f"standard_H{self.horizon}"
+			return f"standard_H{self.horizon}{vmin}"
 		if self.score == "elvis":
-			return f"elvis_H{self.horizon}_lmin{self.lambda_min}_lmax{self.lambda_max}_b{self.beta}"
-		return f"trust_{self.signal}_H{self.horizon}_k{self.kappa}_p{self.tau_pct}"
+			pen = f"_pen{self.penalty}" if self.penalty > 0 else ""
+			if self.lambda_signal == "const":
+				return f"elvis_H{self.horizon}_const{self.lambda_max}{pen}{vmin}"
+			sig = "" if self.lambda_signal == "ucb" else f"_sig{self.lambda_signal}"
+			return f"elvis_H{self.horizon}_lmin{self.lambda_min}_lmax{self.lambda_max}_b{self.beta}{sig}{pen}"
+		name = f"trust_{self.signal}_H{self.horizon}_k{self.kappa}_p{self.tau_pct}"
+		if self.fallback != "q":
+			name += f"_fb{self.fallback}"
+		if self.shuffle_trust:
+			name += "_shuffled"
+		return name
+
+
+def optimism_penalty(roll, lam: torch.Tensor, discount: float) -> torch.Tensor:
+	"""sum_t gamma^t (prod_{j<t} lambda_j) max(0, r_t + gamma V(z_{t+1}) - Q(z_t, a_t)): [N, 1].
+
+	The optimistic Bellman residual at step t, weighted by how much the lambda-return relies on continuing past
+	step t. It subtracts the part of the imagined value that the critic's own consistency does not support.
+	"""
+	H = roll.r_hat.shape[0]
+	reach = torch.cat([torch.ones_like(lam[:1]), torch.cumprod(lam[:H - 1], 0)], 0)          # [H, N, 1]
+	disc = discount ** torch.arange(H, device=lam.device, dtype=lam.dtype).view(H, 1, 1)
+	return (disc * reach * roll.optimism()).sum(0)
 
 
 class AuditedPlanner:
 	def __init__(self, agent, pcfg: PlannerConfig, taus: Optional[dict] = None):
-		assert pcfg.score in SCORES and pcfg.signal in SIGNALS
+		assert pcfg.score in SCORES and pcfg.signal in SIGNALS and pcfg.fallback in FALLBACKS
+		assert pcfg.lambda_signal in ("ucb", "const", "A") and pcfg.value_agg in ("mean", "min")
 		self.agent, self.p = agent, pcfg
 		self.cfg, self.model = agent.cfg, agent.model
 		self.device = next(agent.model.parameters()).device
@@ -68,7 +102,8 @@ class AuditedPlanner:
 			G = G + disc * decode(self.model.reward(z, actions[t], None), self.cfg)
 			z = self.model.next(z, actions[t], None)
 			disc *= self.discount
-		v = q_heads(self.model, z, pi_mean(self.model, z), self.cfg).mean(0)
+		heads = q_heads(self.model, z, pi_mean(self.model, z), self.cfg)
+		v = heads.min(0).values if self.p.value_agg == "min" else heads.mean(0)
 		return G + disc * v, None
 
 	def _signal(self, roll, actions):
@@ -84,21 +119,38 @@ class AuditedPlanner:
 			x["D"] = dynamics_disagreement(self.agent.aux_dynamics_heads(), roll.z, actions)
 		if name == "M":
 			x["M"] = bellman_target_spread(self.agent.aux_dynamics_heads(), self.model, self.cfg, roll, actions)
+		if name == "Ao":
+			x["Ao"] = roll.optimism()
+		if name == "P":
+			x["P"] = roll.head_residual_spread()
+		if name == "At":
+			x["At"] = training_target_residual(self.model, self.cfg, roll)
 		s = {k: v / self.taus[k] for k, v in x.items()}
 		return torch.maximum(s["A"], s["B"]) if name == "C" else s[name]
 
 	def _trust(self, z, actions):
 		roll = audit_rollout(self.model, self.cfg, z, actions, self.discount)
 		w = trust_weights(self._signal(roll, actions), self.p.kappa)
-		score, omega = trust_weighted_return(roll.r_hat, roll.q_sa, roll.q_terminal, w, self.discount)
+		if self.p.shuffle_trust:
+			w = w[:, torch.randperm(w.shape[1], device=w.device)]
+		fallback = {"q": roll.q_sa, "qmin": roll.q_sa_heads.min(0).values, "v": roll.v_mean[:-1]}[self.p.fallback]
+		score, omega = trust_weighted_return(roll.r_hat, fallback, roll.q_terminal, w, self.discount)
 		return score, omega
 
 	def _elvis(self, z, actions):
 		roll = audit_rollout(self.model, self.cfg, z, actions, self.discount)
-		ucb = roll.ucb(self.p.beta)
-		lam = elvis_lambdas(ucb, self.norm, self.p.lambda_min, self.p.lambda_max)
-		self.norm.update(ucb)
-		return elvis_return(roll.r_hat, roll.v_mean, lam, self.discount), None
+		if self.p.lambda_signal == "const":
+			lam = torch.full_like(roll.v_mean, self.p.lambda_max)
+		else:
+			# Uncertainty per step, mapped to lambda by ELVIS's running z-score (high uncertainty -> lower lambda).
+			x = roll.ucb(self.p.beta) if self.p.lambda_signal == "ucb" else roll.delta
+			lam = elvis_lambdas(x, self.norm, self.p.lambda_min, self.p.lambda_max)
+			self.norm.update(x)
+		v = roll.v_heads.min(0).values if self.p.value_agg == "min" else roll.v_mean
+		score = elvis_return(roll.r_hat, v, lam, self.discount)
+		if self.p.penalty > 0:
+			score = score - self.p.penalty * optimism_penalty(roll, lam, self.discount)
+		return score, None
 
 	def estimate_value(self, z, actions):
 		fn = {"standard": self._standard, "trust": self._trust, "elvis": self._elvis}[self.p.score]
@@ -145,8 +197,10 @@ class AuditedPlanner:
 			std = ((score.unsqueeze(0) * (elite_actions - mean.unsqueeze(1)) ** 2).sum(dim=1) / (score.sum(0) + 1e-9)).sqrt()
 			std = std.clamp(cfg.min_std, cfg.max_std)
 
+		self.last_pool = dict(actions=actions.clone(), value=value.clone())  # final MPPI iteration (for diagnostics)
 		rand_idx = math.gumbel_softmax_sample(score.squeeze(1))
 		chosen = torch.index_select(elite_actions, 1, rand_idx).squeeze(1)
+		self.last_plan = chosen.clone()  # [H, A]: the full plan the executed action comes from (run-time monitoring)
 		a, std0 = chosen[0], std[0]
 		if not eval_mode:
 			a = a + std0 * torch.randn(A, device=self.device)

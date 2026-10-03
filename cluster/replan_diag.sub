@@ -1,0 +1,31 @@
+# Re-analyse the saved planning diagnostics (error bars, ELVIS variants). One job per line of diag_runs.txt.
+# Usage:  condor_submit replan_diag.sub      Needs results/plandiag_<name>.tar.gz.
+# Output: results/plandiag2_<name>.tar.gz
+universe = container
+container_image = file:///staging/s/smittal39/tdmpc2_v2.sif
+
+executable = replan_diag.sh
+arguments = $(name) $(run) $(task)
+transfer_input_files = code.tar.gz, results/$(name).tar.gz, results/plandiag_$(name).tar.gz
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+stream_output = True
+stream_error = True
+transfer_output_files = diag.tar.gz
+transfer_output_remaps = "diag.tar.gz = results/plandiag2_$(name).tar.gz"
+
+log = logs/plandiag2_$(name).log
+output = logs/plandiag2_$(name).$(Cluster).out
+error = logs/plandiag2_$(name).$(Cluster).err
+
+requirements = (HasCHTCStaging == true)
+request_gpus = 1
+gpus_minimum_capability = 7.0
+gpus_maximum_capability = 9.0
++WantGPULab = true
++GPUJobLength = "short"
+request_cpus = 4
+request_memory = 16GB
+request_disk = 30GB
+
+queue name, run, task from diag_runs.txt

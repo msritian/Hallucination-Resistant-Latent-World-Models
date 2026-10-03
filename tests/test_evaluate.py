@@ -40,7 +40,7 @@ def test_calibrate_and_evaluate_end_to_end(tmp_path):
 	data = dict(obs=torch.randn(E, T + 1, 6, generator=g), action=torch.rand(E, T, 3, generator=g) * 2 - 1,
 	            success=torch.zeros(E, T))
 	taus = calibrate_taus(agent, data, max_h=24, beta=1.0)
-	assert set(taus[95]) == {"A", "B", "E", "D", "M"} and len(taus[95]["A"]) == 24
+	assert set(taus[95]) == {"A", "B", "E", "D", "M", "Ao", "P", "At", "Aa", "Ac", "A2", "A3", "A5", "A8"} and len(taus[95]["A"]) == 24
 	arms = ["stock", PlannerConfig(horizon=3, score="standard"), PlannerConfig(horizon=12, score="trust", signal="C"),
 	        PlannerConfig(horizon=24, score="trust", signal="M", tau_pct=99), PlannerConfig(horizon=6, score="elvis")]
 	summary = evaluate_arms(agent, MockEnv(), arms, taus, episodes=2, seed_start=1000, out=tmp_path)
@@ -50,3 +50,33 @@ def test_calibrate_and_evaluate_end_to_end(tmp_path):
 	rows = (tmp_path / "episodes.csv").read_text().strip().splitlines()
 	assert len(rows) == 1 + 5 * 2
 	json.loads((tmp_path / "summary.json").read_text())
+
+
+def test_fixes_preset():
+	arms = preset("fixes", grounded=True)
+	names = [a if isinstance(a, str) else a.name() for a in arms]
+	assert len(names) == len(set(names))
+	assert "trust_A_H12_k1.0_p95_fbv" in names and "trust_A_H12_k1.0_p95_shuffled" in names and "trust_Ao_H24_k1.0_p95_fbv" in names
+
+
+def test_confirm_preset():
+	names = [a if isinstance(a, str) else a.name() for a in preset("confirm", grounded=True)]
+	assert len(names) == len(set(names)) == 9
+	assert "trust_Ao_H12_k1.0_p95_fbqmin" in names and "trust_Ao_H12_k1.0_p95_fbqmin_shuffled" in names
+
+
+def test_structure_preset():
+	names = [a if isinstance(a, str) else a.name() for a in preset("structure", grounded=True)]
+	assert len(names) == len(set(names))
+	assert {"elvis_H12_const0.5", "elvis_H24_lmin0.0_lmax1.0_b1.0_sigA", "trust_Ao_H24_k1.0_p95_fbqmin"} <= set(names)
+
+
+def test_lambda_preset():
+	names = [a if isinstance(a, str) else a.name() for a in preset("lambda", grounded=True)]
+	assert len(names) == len(set(names)) == 16
+	assert {"elvis_H12_const0.8", "elvis_H24_const0.8_pen1.0", "elvis_H24_lmin0.0_lmax1.0_b1.0"} <= set(names)
+
+
+def test_pessimism_preset():
+	names = [a if isinstance(a, str) else a.name() for a in preset("pessimism", grounded=True)]
+	assert len(names) == len(set(names)) == 11 and "elvis_H24_const0.8_vmin" in names and "standard_H12_vmin" in names

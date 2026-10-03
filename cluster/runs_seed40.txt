@@ -1,0 +1,6 @@
+seed_stock_push_s40, stock, PushCube-v1, 40, 200000, --max_hours 3 --eval_freq 50000 --video_freq 500000 --ckpt_freq 25000 --compile_mode default
+seed_grounded_push_s40, grounded, PushCube-v1, 40, 200000, --max_hours 3 --eval_freq 50000 --video_freq 500000 --ckpt_freq 25000 --compile_mode default
+seed_stock_stack_s40, stock, StackCube-v1, 40, 500000, --max_hours 3 --eval_freq 50000 --video_freq 500000 --ckpt_freq 25000 --compile_mode default
+seed_grounded_stack_s40, grounded, StackCube-v1, 40, 500000, --max_hours 3 --eval_freq 50000 --video_freq 500000 --ckpt_freq 25000 --compile_mode default
+seed_stock_ycb_s40, stock, PickSingleYCB-v1, 40, 1000000, --max_hours 3 --eval_freq 50000 --video_freq 500000 --ckpt_freq 25000 --compile_mode default
+seed_grounded_ycb_s40, grounded, PickSingleYCB-v1, 40, 1000000, --max_hours 3 --eval_freq 50000 --video_freq 500000 --ckpt_freq 25000 --compile_mode default

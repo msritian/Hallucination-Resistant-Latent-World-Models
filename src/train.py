@@ -33,11 +33,15 @@ from src.agents.grounded_tdmpc2 import GroundedTDMPC2
 from src.envs.maniskill3 import TASKS, ManiSkill3Env
 from src.utils import mirror
 from src.utils.csvlog import CSVLog
+from src.utils.safety import episodes_that_fit, model_is_finite
 
 CHECKPOINT_EXIT_CODE = 85
 RUNS = {
 	"stock": dict(grounded=False, num_aux_dynamics=0),
 	"grounded": dict(grounded=True, num_aux_dynamics=4),
+	# Ablations separating grounding from the auxiliary dynamics heads (which share the gradient-clipping norm):
+	"grounded_noaux": dict(grounded=True, num_aux_dynamics=0),
+	"stock_aux": dict(grounded=False, num_aux_dynamics=4),
 }
 
 
@@ -182,7 +186,12 @@ class Trainer:
 		if ck["episodes"] is not None:
 			eps = TensorDict(ck["episodes"], batch_size=ck["episodes"]["reward"].shape[:2])
 			self.episodes = list(eps.unbind(0))
-			self.buffer.load(eps.clone())
+			# Reload only the newest episodes that fit: writing more entries than the buffer's capacity in a single
+			# extend scrambles episodes (duplicate indices), which puts the NaN placeholder of an episode's first
+			# entry into training batches and turns the weights to NaN.
+			keep = episodes_that_fit(eps.shape[0], eps.shape[1], self.buffer.capacity)
+			self.buffer.load(eps[eps.shape[0] - keep:].clone())
+			print(f"Loaded the newest {keep:,} of {eps.shape[0]:,} episodes into the replay buffer")
 		print(f"Resumed from step {self.step:,} ({len(self.episodes)} episodes), resume #{self.resume_count}")
 
 	@staticmethod
@@ -206,6 +215,9 @@ class Trainer:
 			print(f"Warning: mirroring to {self.mirror} failed: {e}")
 
 	def save_checkpoint(self, finished=False):
+		if not model_is_finite(self.agent.model):
+			print("ERROR: model weights contain NaN/Inf; not overwriting the last good checkpoint.", flush=True)
+			sys.exit(1)
 		ck = {
 			"agent": self.agent.checkpoint_state(),
 			"step": self.step, "ep_idx": self.ep_idx, "elapsed": self.elapsed(),

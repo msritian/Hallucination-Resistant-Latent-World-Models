@@ -1,0 +1,3 @@
+PushCube-v1, seed_grounded_push_s40, seed_stock_push_s40
+StackCube-v1, seed_grounded_stack_s40, seed_stock_stack_s40
+PickSingleYCB-v1, seed_grounded_ycb_s40, seed_stock_ycb_s40

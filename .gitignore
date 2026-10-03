@@ -229,3 +229,5 @@ cluster/*.err
 # Personal planning documents (kept local)
 /execution_final.md
 /Research_WM.md
+/rvs_results/
+/results_local/

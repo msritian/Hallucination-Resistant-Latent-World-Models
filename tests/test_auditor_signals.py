@@ -74,3 +74,40 @@ def test_ensemble_signals_shapes_and_zero_when_heads_agree():
 	]
 	assert dynamics_disagreement(heads, roll.z, actions).shape == (H, N, 1)
 	assert bellman_target_spread(heads, model, cfg, roll, actions).shape == (H, N, 1)
+
+
+def test_anchored_and_cumulative_residuals():
+	model = ConsistentWorldModel(latent_dim=D, action_dim=A)
+	z0, actions = _inputs()
+	roll = audit_rollout(model, make_cfg(num_bins=0), z0, actions, discount=model.gamma)
+	assert roll.anchored_residual().shape == (H, N, 1) and roll.anchored_residual().abs().max() < 1e-5
+	assert roll.cumulative_signed_residual().abs().max() < 1e-5
+	cfg = make_cfg()
+	r = audit_rollout(MockWorldModel(latent_dim=D, action_dim=A), cfg, z0, actions, discount=0.95)
+	assert torch.allclose(r.anchored_residual()[0], r.delta[0], atol=1e-5)   # t = 0 equals Signal A
+	assert torch.allclose(r.cumulative_signed_residual()[0], r.delta[0], atol=1e-5)
+	# a constant signed bias accumulates in Ac but not in A
+	s = r.signed_residual()
+	manual = sum(0.95 ** k * s[k] for k in range(3)).abs()
+	assert torch.allclose(r.cumulative_signed_residual()[2], manual, atol=1e-5)
+
+
+def test_anchored_residual_sees_drift_that_one_step_misses():
+	model = ConsistentWorldModel(latent_dim=D, action_dim=A)
+	z0, actions = _inputs()
+	# a small, consistent value drift at every step: each step slightly inconsistent, all in the same direction
+	drift = lambda t, z: torch.softmax(torch.log(z + 1e-8) + 0.05 * model.v.view(1, -1).expand_as(z), -1)
+	roll = audit_rollout(model, make_cfg(num_bins=0), z0, actions, discount=model.gamma, inject=drift)
+	assert roll.cumulative_signed_residual()[-1].mean() > roll.delta[-1].mean()
+
+
+def test_k_step_residual_limits():
+	cfg = make_cfg()
+	z0, actions = _inputs()
+	r = audit_rollout(MockWorldModel(latent_dim=D, action_dim=A), cfg, z0, actions, discount=0.95)
+	assert torch.allclose(r.k_step_residual(1), r.delta, atol=1e-5)
+	assert torch.allclose(r.k_step_residual(H), r.anchored_residual(), atol=1e-5)
+	assert r.k_step_residual(3).shape == (H, N, 1)
+	model = ConsistentWorldModel(latent_dim=D, action_dim=A)
+	rc = audit_rollout(model, make_cfg(num_bins=0), z0, actions, discount=model.gamma)
+	assert rc.k_step_residual(3).abs().max() < 1e-5

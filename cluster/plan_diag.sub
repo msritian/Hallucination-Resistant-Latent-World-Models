@@ -1,0 +1,31 @@
+# Ground-truth planning diagnostics (candidates executed in the real simulator), one job per line of diag_runs.txt.
+# Usage:  condor_submit plan_diag.sub            (all lines of diag_runs.txt: name, run, task)
+# Output: results/plandiag_<name>.tar.gz  (report.md, diag.json, records.pt, taus_candidates.json)
+universe = container
+container_image = file:///staging/s/smittal39/tdmpc2_v2.sif
+
+executable = plan_diag.sh
+arguments = $(name) $(run) $(task)
+transfer_input_files = code.tar.gz, results/$(name).tar.gz
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+stream_output = True
+stream_error = True
+transfer_output_files = diag.tar.gz
+transfer_output_remaps = "diag.tar.gz = results/plandiag_$(name).tar.gz"
+
+log = logs/plandiag_$(name).log
+output = logs/plandiag_$(name).$(Cluster).out
+error = logs/plandiag_$(name).$(Cluster).err
+
+requirements = (HasCHTCStaging == true)
+request_gpus = 1
+gpus_minimum_capability = 7.0
+gpus_maximum_capability = 9.0
++WantGPULab = true
++GPUJobLength = "short"
+request_cpus = 4
+request_memory = 32GB
+request_disk = 30GB
+
+queue name, run, task from diag_runs.txt

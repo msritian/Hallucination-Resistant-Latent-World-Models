@@ -23,3 +23,12 @@ def test_episode_checkpoint_roundtrip_is_plain_tensors():
 	restored = TensorDict(saved, batch_size=saved["reward"].shape[:2])
 	assert restored.shape == (3, 51)
 	assert torch.equal(restored["obs"][1], eps[1]["obs"])
+
+
+def test_ablation_run_types():
+	import pytest
+	pytest.importorskip("omegaconf")  # src.train needs TD-MPC2's config stack (present in the cluster container)
+	pytest.importorskip("torchrl")
+	from src.train import RUNS
+	assert RUNS["grounded_noaux"] == dict(grounded=True, num_aux_dynamics=0)
+	assert RUNS["stock_aux"] == dict(grounded=False, num_aux_dynamics=4)
