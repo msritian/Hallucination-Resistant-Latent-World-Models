@@ -117,10 +117,11 @@ def rollout_signals(agent, z_real, actions, beta: float, inject=None, bias=None)
 
 
 @torch.no_grad()
-def plan_signals(agent, z0, actions, beta: float, inject=None, bias=None):
+def plan_signals(agent, z0, actions, beta: float, inject=None, bias=None, ensemble: bool = True):
 	"""All signals [H, M] and the rollout for imagined rollouts from z0 [M, d] along actions [H, M, A].
 
-	Needs only the start latent, so it also scores plans the robot has not executed (run-time monitoring)."""
+	Needs only the start latent, so it also scores plans the robot has not executed (run-time monitoring).
+	``ensemble=False`` skips the dynamics-ensemble signals D and M (faster; not inputs of the learned audit)."""
 	cfg, model = agent.cfg, agent.model
 	roll = audit_rollout(model, cfg, z0, actions, float(agent.discount), inject=inject)
 	sig = {
@@ -141,7 +142,7 @@ def plan_signals(agent, z0, actions, beta: float, inject=None, bias=None):
 		disc = float(agent.discount) ** torch.arange(excess.shape[0], device=excess.device, dtype=excess.dtype).view(-1, 1)
 		sig["Ab"] = excess.abs()
 		sig["Acb"] = torch.cumsum(disc * excess, 0).abs()
-	if agent.num_aux_dynamics > 0:
+	if ensemble and agent.num_aux_dynamics > 0:
 		heads = agent.aux_dynamics_heads()
 		sig["D"] = dynamics_disagreement(heads, roll.z, actions).squeeze(-1)
 		sig["M"] = bellman_target_spread(heads, model, cfg, roll, actions).squeeze(-1)
@@ -423,9 +424,12 @@ def fit_lba(agent, data: dict, H: int, beta: float, episode_ids=None) -> dict:
 	eps_clean, eps_hall = torch.quantile(e1, 0.9).item(), torch.quantile(e1, 0.99).item()
 	y = (E > eps_hall).reshape(-1)
 	keep = ((E > eps_hall) | (E <= eps_clean)).reshape(-1)
-	X = _features({k: v.cpu() for k, v in sig.items()}, roll, CRITIC_FEATURES, L, True)[keep].numpy()
+	X_all = _features({k: v.cpu() for k, v in sig.items()}, roll, CRITIC_FEATURES, L, True)
+	X = X_all[keep].numpy()
 	clf = make_gbt().fit(X, y[keep].numpy())
-	return dict(bias=bias, clf=clf, eps_clean=eps_clean, eps_hall=eps_hall, L=L, n_pos=int(y[keep].sum()))
+	idx = torch.randperm(X_all.shape[0], generator=torch.Generator().manual_seed(0))[:2000]
+	return dict(bias=bias, clf=clf, eps_clean=eps_clean, eps_hall=eps_hall, L=L, n_pos=int(y[keep].sum()),
+	            X_sample=X_all[idx])  # real features, to check a re-implementation of the trees against sklearn
 
 
 def learned_audits(sig_cal: dict, roll_cal, E_cal, sig_ev: dict, roll_ev, E_shape) -> dict:

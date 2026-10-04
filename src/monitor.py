@@ -185,7 +185,7 @@ def write_outputs(out: Path, arms: list):
 		rows = torch.load(out / "arms" / f"{arm.name}.pt", weights_only=False)["rows"]
 		all_rows += rows
 		summary[arm.name] = dict(success=sum(r["success"] for r in rows) / len(rows),
-		                         warning_rate=sum(r["warning_rate"] for r in rows) / len(rows), episodes=len(rows))
+		                         warning_rate=sum(r.get("warning_rate", 0.0) for r in rows) / len(rows), episodes=len(rows))
 	with open(out / "episodes.csv", "w", newline="") as fh:
 		w = csv.DictWriter(fh, fieldnames=list(all_rows[0]))
 		w.writeheader()
