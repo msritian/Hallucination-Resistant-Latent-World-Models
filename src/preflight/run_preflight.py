@@ -106,12 +106,12 @@ def return_error(roll, r_true: torch.Tensor, discount: float) -> torch.Tensor:
 
 
 @torch.no_grad()
-def rollout_signals(agent, z_real, actions, beta: float, inject=None, bias=None):
+def rollout_signals(agent, z_real, actions, beta: float, inject=None, bias=None, ensemble: bool = True):
 	"""All signals [H, M], the true latent error e_{t+1} [H, M], and the rollout, for one batch of replays.
 
 	``bias`` [H]: the critic's typical signed residual on correct steps (from calibration). When given, adds the
 	bias-corrected residuals Ab (one step) and Acb (cumulative)."""
-	sig, roll = plan_signals(agent, z_real[0], actions, beta, inject=inject, bias=bias)
+	sig, roll = plan_signals(agent, z_real[0], actions, beta, inject=inject, bias=bias, ensemble=ensemble)
 	err = (roll.z[1:] - z_real[1:]).norm(dim=-1)
 	return sig, err, roll
 

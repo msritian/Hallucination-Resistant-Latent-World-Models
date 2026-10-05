@@ -13,6 +13,7 @@ os.environ.setdefault("LAZY_LEGACY_OP", "0")
 os.environ.setdefault("TORCHDYNAMO_INLINE_INBUILT_NN_MODULES", "1")
 
 import argparse
+import json
 import random
 import sys
 import time
@@ -55,6 +56,12 @@ def parse_args(argv=None):
 	p.add_argument("--model_size", type=int, default=5)
 	p.add_argument("--eval_freq", type=int, default=25_000)
 	p.add_argument("--eval_episodes", type=int, default=10)
+	p.add_argument("--final_eval_episodes", type=int, default=None, help="episodes for the final evaluation (default: eval_episodes)")
+	p.add_argument("--replay", choices=["uniform", "lba", "D"], default="uniform",
+	               help="detector-guided replay (src/training/audit_replay.py): train more on windows flagged by the audit (lba) or by ensemble disagreement (D)")
+	p.add_argument("--replay_refresh", type=int, default=50_000, help="re-score the replay buffer every N steps")
+	p.add_argument("--replay_frac", type=float, default=0.5, help="fraction of each batch from the flagged windows")
+	p.add_argument("--replay_top", type=float, default=0.3, help="fraction of windows kept as flagged")
 	p.add_argument("--eval_seed_start", type=int, default=1000)
 	p.add_argument("--video_freq", type=int, default=100_000, help="save an eval video at least this often (and at the end)")
 	p.add_argument("--ckpt_freq", type=int, default=25_000)
@@ -175,6 +182,11 @@ class Trainer:
 		self.next_eval, self.next_ckpt, self.next_video = 0, args.ckpt_freq, 0
 		self.episodes = []
 		self._tds = None
+		self.sampler = None
+		if args.replay != "uniform":
+			from src.training.audit_replay import AuditReplay
+			self.sampler = AuditReplay(self.buffer, args.replay, frac=args.replay_frac, top=args.replay_top, seed=args.seed)
+		self.next_refresh = 0   # also refreshed right after a resume (scores are not checkpointed)
 		if resume:
 			self._restore(resume)
 
@@ -236,24 +248,32 @@ class Trainer:
 		return self.elapsed_before + time.time() - self.job_start
 
 	# ---------------------------------------------------------------- evaluation
-	def evaluate(self, record_video: bool):
+	def evaluate(self, record_video: bool, episodes=None, keep=None):
+		"""``keep``: list that receives each episode's (obs, action, reward) for later analysis."""
 		rewards, successes = [], []
-		for i in range(self.args.eval_episodes):
+		for i in range(episodes or self.args.eval_episodes):
 			obs, done, ep_reward, t = self.eval_env.reset(seed=self.args.eval_seed_start + i), False, 0.0, 0
+			traj = dict(obs=[obs], action=[torch.full_like(self.eval_env.rand_act(), float("nan"))], reward=[torch.tensor(float("nan"))])
 			frames = [self.eval_env.render()] if (record_video and i == 0) else None
 			while not done:
 				torch.compiler.cudagraph_mark_step_begin()
 				action = self.agent.act(obs, t0=t == 0, eval_mode=True)
 				obs, reward, done, info = self.eval_env.step(action)
+				traj["obs"].append(obs)
+				traj["action"].append(action.cpu())
+				traj["reward"].append(reward)
 				ep_reward += float(reward)
 				t += 1
 				if frames is not None:
 					frames.append(self.eval_env.render())
 			rewards.append(ep_reward)
 			successes.append(info["success"])
+			if keep is not None:
+				keep.append({k: torch.stack(v) for k, v in traj.items()})
 			if frames is not None:
 				save_video(frames, self.out / "videos" / f"eval_step{self.step:08d}.mp4")
-		return dict(episode_reward=float(np.mean(rewards)), episode_success=float(np.mean(successes)))
+		return dict(episode_reward=float(np.mean(rewards)), episode_success=float(np.mean(successes)),
+		            successes=[float(x) for x in successes])
 
 	# ---------------------------------------------------------------- main loop
 	def train(self):
@@ -289,6 +309,7 @@ class Trainer:
 				if self.step >= self.next_eval:
 					record = self.step >= self.next_video
 					m = self.evaluate(record_video=record)
+					m.pop("successes")
 					self.eval_log.write(dict(step=self.step, elapsed=round(self.elapsed(), 1), **m))
 					print(f"[eval] step {self.step:,}  success {m['episode_success']:.2f}  reward {m['episode_reward']:.2f}")
 					self.next_eval += args.eval_freq
@@ -305,6 +326,13 @@ class Trainer:
 					self.save_checkpoint()
 					print(f"Stopping at step {self.step:,} to be resumed (exit {CHECKPOINT_EXIT_CODE}).")
 					sys.exit(CHECKPOINT_EXIT_CODE)
+
+				if (self.sampler is not None and self.step >= self.cfg.seed_steps and self.step >= self.next_refresh
+				        and len(self.episodes) >= self.sampler.fit_episodes):
+					t0 = time.time()
+					self.sampler.refresh(self.agent, self.episodes)
+					print(f"[replay] step {self.step:,}  refreshed in {time.time() - t0:.0f} s  {self.sampler.stats}", flush=True)
+					self.next_refresh = self.step + args.replay_refresh
 
 				t0 = time.time()
 				obs = env.reset()
@@ -329,14 +357,23 @@ class Trainer:
 					print("Pretraining agent on seed data...")
 				t0 = time.time()
 				for _ in range(num_updates):
-					train_metrics = self.agent.update(self.buffer)
+					train_metrics = self.agent.update(self.sampler if self.sampler is not None else self.buffer)
 				sync()
 				timers["update"] += time.time() - t0
 			self.step += 1
 
-		m = self.evaluate(record_video=True)
+		kept = []
+		m = self.evaluate(record_video=True, episodes=args.final_eval_episodes, keep=kept)
+		final = dict(step=self.step, seeds=list(range(args.eval_seed_start, args.eval_seed_start + len(m["successes"]))), **m)
+		try:   # how wrong the final model's imagination is on its own evaluation episodes
+			from src.training.audit_replay import imagination_error
+			final.update(imagination_error(self.agent, kept))
+		except Exception as exc:   # never lose a finished run over this diagnostic
+			final["imagination_error_failed"] = repr(exc)
+		(self.out / "final_eval.json").write_text(json.dumps(final, indent=1))
+		m.pop("successes")
 		self.eval_log.write(dict(step=self.step, elapsed=round(self.elapsed(), 1), **m))
-		print(f"[final eval] step {self.step:,}  success {m['episode_success']:.2f}")
+		print(f"[final eval] step {self.step:,}  success {m['episode_success']:.2f}  return error {final.get('return_error_last')}")
 		self.save_checkpoint(finished=True)
 		torch.save(self.agent.checkpoint_state()["model"], self.out / "final_model.pt")
 		self._push_mirror()
