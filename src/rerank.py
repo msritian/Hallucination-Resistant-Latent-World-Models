@@ -24,7 +24,7 @@ import torch
 
 from src.preflight.run_preflight import CRITIC_FEATURES, _features, calibration_bias, plan_signals, value_fn, windows
 
-RULES = ("default", "imagined", "corrected", "penD", "penM", "oracle", "random")
+RULES = ("H3", "default", "imagined", "corrected", "penD", "penM", "oracle", "random")
 
 
 # ------------------------------------------------------------------------------------------------ candidates
@@ -210,7 +210,13 @@ def main(argv=None):
 		f = out / "arms" / f"{rule}.pt"
 		if f.exists():
 			continue
-		rows = run_rule(agent, env, sim, planner_fn, rule, bias, a.K, model, lam, a.episodes, a.seed_start, seed=k)
+		if rule == "H3":   # reference: standard TD-MPC2-length planning (3 steps), the planner's own choice
+			h3 = lambda: AuditedPlanner(agent, PlannerConfig(horizon=3, score="standard"))
+			rows = run_rule(agent, env, sim, h3, "default", bias, a.K, model, lam, a.episodes, a.seed_start, seed=k)
+			for r in rows:
+				r["arm"] = "H3"
+		else:
+			rows = run_rule(agent, env, sim, planner_fn, rule, bias, a.K, model, lam, a.episodes, a.seed_start, seed=k)
 		torch.save(dict(rows=rows), f)
 		print(f"{rule:10s} success {sum(r['success'] for r in rows) / len(rows):.2f}  "
 		      f"{sum(r['seconds'] for r in rows) / len(rows):.1f} s/episode", flush=True)

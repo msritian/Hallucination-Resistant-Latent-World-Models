@@ -13,3 +13,7 @@ Go/no-go (decided now):
 - G2 (does Idea 1 work?): offline held-out regret corrected < imagined and < best ensemble penalty on both robots, AND
   closed-loop success(corrected) > success(imagined) and >= success(best ensemble penalty), averaged over robots.
 - If G1 and G2 pass: scale to all tasks/robots with a full pre-registration. Pilot numbers are reported either way.
+
+Amendment (2026-10-06, before the pilot started): added a reference arm "H3" (standard 3-step planning, the TD-MPC2
+setting). Extra condition for usefulness: success(corrected, H12) must exceed success(H3); otherwise Idea 1 only repairs
+a planner that is worse than TD-MPC2's own.
