@@ -104,14 +104,69 @@ Calibration needs only ordinary logged episodes: for every window of length $H$ 
 the actions and the real rewards are known, so $E_k$ and $y_k$ can be computed without resetting the environment.
 At inference the detector may use only the world model's own outputs along $\mathbf a$.
 
-\paragraph{Our detector (for reference).}
-With $\bar Q=\frac1K\sum_i Q^{(i)}_\theta$, from the imagined rollout we compute Bellman-consistency residuals, e.g.\ the one-step residual
-$\delta_k=\bigl|\bar Q(\hat z_k,a_k)-\bigl(\hat r_k+\gamma V_\theta(\hat z_{k+1})\bigr)\bigr|$ and the residual
-anchored at the real start
-$\bigl|\bar Q(\hat z_0,a_0)-\bigl(\sum_{j\le k}\gamma^j\hat r_j+\gamma^{k+1}V_\theta(\hat z_{k+1})\bigr)\bigr|$,
-plus multi-step, cumulative, bias-corrected and per-head variants, critic disagreement, $V_\theta(\hat z_{k+1})$,
-$\hat r_k$ and $k$. A gradient-boosted tree classifier maps these features to $p_k$; it is fitted on calibration
-labels $y_k$. No extra models are trained.
+Section~4 describes our detector; Section~5 evaluates any detector, ours and baselines alike, against the
+labels of Section~2.
+
+\section{Method: the Bellman-consistency audit}
+
+\paragraph{Idea.}
+The critic summarises what the agent has learned about the future from \emph{real} experience. For the model's own
+predictions, the Bellman equation says that the value of a step must equal its reward plus the discounted value of
+the next state. With a deterministic latent model this must hold, up to normal approximation error, at every
+imagined step:
+\[
+\bar Q(\hat z_k,a_k)\;\approx\;\hat r_k+\gamma\,V_\theta(\hat z_{k+1}),
+\qquad \bar Q=\tfrac1K\textstyle\sum_i Q^{(i)}_\theta .
+\]
+When the dynamics imagine a next state that does not follow from $(\hat z_k,a_k)$, for example an imagined success
+that would not happen, the right-hand side jumps (through $\hat r_k$ and $V_\theta(\hat z_{k+1})$) while the
+left-hand side still reflects what the critic expects from $(\hat z_k,a_k)$. The two sides then disagree. The audit
+measures this disagreement using only the model's own outputs, so it needs no simulator, no decoder and no extra
+models.
+
+\paragraph{Residual signals.}
+For an imagined rollout from $o_t$ along $\mathbf a$, with signed residual
+$\Delta_k=\hat r_k+\gamma V_\theta(\hat z_{k+1})-\bar Q(\hat z_k,a_k)$:
+\begin{align*}
+&\text{one-step (sudden errors)} && \delta_k=|\Delta_k|,\\
+&\text{$n$-step, $n\in\{2,3,5,8\}$} && \delta^{(n)}_k=\Bigl|\bar Q(\hat z_s,a_s)-\Bigl(\textstyle\sum_{j=s}^{k}\gamma^{j-s}\hat r_j+\gamma^{k-s+1}V_\theta(\hat z_{k+1})\Bigr)\Bigr|,\ \ s=\max(0,k-n+1),\\
+&\text{anchored (gradual drift)} && \delta^{\text{anc}}_k=\Bigl|\bar Q(\hat z_0,a_0)-\Bigl(\textstyle\sum_{j=0}^{k}\gamma^{j}\hat r_j+\gamma^{k+1}V_\theta(\hat z_{k+1})\Bigr)\Bigr|,\\
+&\text{cumulative signed} && \delta^{\text{cum}}_k=\Bigl|\textstyle\sum_{j=0}^{k}\gamma^j\Delta_j\Bigr|.
+\end{align*}
+The anchored residual compares the imagined $(k+1)$-step return with the critic's estimate at the \emph{real} start
+$\hat z_0=h_\theta(o_t)$, the one point of the rollout that is not imagined. Small per-step inconsistencies therefore
+accumulate against a fixed reference. The cumulative signed residual lets random per-step noise cancel while a
+consistent drift adds up.
+
+Further variants:
+\begin{itemize}[nosep]
+\item bias-corrected $\delta_k$ and $\delta^{\text{cum}}_k$, after subtracting the median signed residual of correct
+  calibration steps at each $k$;
+\item the optimistic part $\max(0,\Delta_k)$;
+\item the residual against the critic's training target;
+\item the spread of the residual across the $K$ critic heads;
+\item the spread of $Q^{(i)}_\theta(\hat z_k,a_k)$ and an upper-confidence value score.
+\end{itemize}
+
+\paragraph{Normal residuals are not zero.}
+Even for a correct rollout, $\Delta_k\neq0$ because of approximation error and, in stochastic environments, because a
+deterministic model predicts a single next state while the critic learns expected values. The audit therefore never
+uses ``$\delta>0$''. It learns from calibration data which residual patterns accompany real hallucinations.
+
+\paragraph{Learned audit.}
+At each imagined step the feature vector $x_k\in\R^{31}$ contains:
+\begin{itemize}[nosep]
+\item the 14 signals above, together with their running maxima over $0,\dots,k$;
+\item $V_\theta(\hat z_{k+1})$, $\hat r_k$ and $k$.
+\end{itemize}
+A gradient-boosted tree classifier $g$ (200 trees of at most 15 leaves, learning rate 0.05, $L_2$ penalty 1.0,
+balanced classes; fixed for all models) is fitted on the calibration pairs $\{(x_k,y_k)\}$ with $y_k\in\{0,1\}$.
+The detector output is
+\[
+p_k=g(x_k)\in[0,1].
+\]
+At inference the audit costs one imagined rollout plus a few critic evaluations per step, and no model other than
+the trained agent is used.
 
 \section{Evaluation}
 
