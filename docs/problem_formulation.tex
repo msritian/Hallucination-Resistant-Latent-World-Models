@@ -1,0 +1,146 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,booktabs,enumitem}
+\usepackage[hidelinks]{hyperref}
+\newtheorem{definition}{Definition}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+\title{Problem Formulation: Run-Time Detection of Hallucinations\\in Decoder-Free Latent World Models}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Setting}
+
+\paragraph{Environment.}
+We consider a Markov decision process $\mathcal{M}=(\mathcal{S},\mathcal{A},P,r,\rho_0,\gamma)$ with state space
+$\mathcal{S}$, continuous action space $\mathcal{A}\subseteq[-1,1]^{m}$, transition kernel $P(s'\mid s,a)$, reward
+function $r:\mathcal{S}\times\mathcal{A}\to\R$, initial-state distribution $\rho_0$ and discount $\gamma\in(0,1)$.
+The agent observes $o_t=s_t$ (low-dimensional state observations). Episodes have a fixed length $T$ and do not
+terminate early. In our experiments $\mathcal{M}$ is a ManiSkill3 manipulation task (PushCube, StackCube,
+PickSingleYCB, PegInsertionSide) with normalized dense reward, simulated deterministically given the full simulator
+state.
+
+\paragraph{World model and agent.}
+The agent is a trained TD-MPC2 model with parameters $\theta$, consisting of
+\begin{align*}
+&\text{encoder} && z_t = h_\theta(o_t), &
+&\text{latent dynamics} && \hat z' = d_\theta(z,a),\\
+&\text{reward head} && \hat r = R_\theta(z,a), &
+&\text{critic ensemble} && \{Q_\theta^{(i)}(z,a)\}_{i=1}^{K},\ K=5,\\
+&\text{policy prior} && a=\pi_\theta(z), &
+&\text{value} && V_\theta(z)=\tfrac1K\textstyle\sum_i Q^{(i)}_\theta\big(z,\pi_\theta(z)\big).
+\end{align*}
+There is \emph{no decoder}: latents are never trained to reconstruct observations, only to predict rewards and values
+and to be self-predictive. $d_\theta$ is deterministic. The model is trained with the standard TD-MPC2 objective
+on data the agent collects online; \emph{the detection problem below treats $\theta$ as fixed}.
+
+\paragraph{Imagined rollout.}
+Given a real observation $o_t$ and an action sequence $\mathbf a=(a_0,\dots,a_{H-1})$, the model imagines
+\[
+\hat z_0=h_\theta(o_t),\qquad \hat z_{k+1}=d_\theta(\hat z_k,a_k),\qquad \hat r_k=R_\theta(\hat z_k,a_k),\qquad k=0,\dots,H-1.
+\]
+The planner (MPPI) scores candidate sequences with imagined rewards plus a terminal value,
+$\sum_{k<H}\gamma^k\hat r_k+\gamma^H V_\theta(\hat z_H)$; TD-MPC2 uses $H=3$ and replans at every step.
+
+\section{What counts as a hallucination}
+
+A hallucination is defined only through quantities the world model is trained to predict: rewards along the given
+actions. No reconstruction or state probe is involved.
+
+\begin{definition}[Imagination error]
+Let $(r_{t},r_{t+1},\dots)$ be the rewards the environment returns when the \emph{same} actions $\mathbf a$ are
+executed from the \emph{same} state $s_t$. The imagination error after $k+1$ imagined transitions is
+\[
+E_k \;=\; \Bigl|\,\sum_{j=1}^{k+1}\gamma^{\,j-1}\bigl(\hat r_j - r_{t+j}\bigr)\Bigr|,\qquad k=0,\dots,H-2,
+\]
+the absolute difference between the imagined and the real discounted return accumulated from $\hat z_1$ to
+$\hat z_{k+1}$. ($\hat r_0$ is excluded because $\hat z_0$ is the encoding of a real observation.)
+\end{definition}
+
+\begin{definition}[Hallucination label]
+Let $\mathcal{C}$ be a set of calibration windows (Section~3). With $q_\alpha$ the $\alpha$-quantile of the
+one-transition errors $\{E_0\}$ over $\mathcal{C}$, set $\varepsilon_{\text{hall}}=q_{0.99}$ and
+$\varepsilon_{\text{clean}}=q_{0.90}$. Step $k$ of a window is labelled
+\[
+y_k=\begin{cases}1 & E_k>\varepsilon_{\text{hall}} \quad\text{(hallucinated)}\\
+0 & E_k\le\varepsilon_{\text{clean}} \quad\text{(correct)}\\
+\text{excluded} & \text{otherwise.}\end{cases}
+\]
+A positive step is \emph{sudden} if some increment $E_j-E_{j-1}$, $j\le k$, exceeds the 0.99-quantile of calibration
+increments, and \emph{gradual} otherwise.
+\end{definition}
+
+The thresholds are relative to the model's own one-step accuracy, so normal approximation and environment noise
+are not counted as hallucination. Because $\mathcal{M}$ is simulated deterministically, a single real execution
+gives the real return; in a stochastic environment $r_{t+j}$ would be replaced by its expectation over repeated
+executions from $s_t$.
+
+\section{The detection task}
+
+\paragraph{Goal.}
+Learn a detector
+\[
+f:\ \bigl(o_t,\ \mathbf a\bigr)\ \longmapsto\ (p_0,\dots,p_{H-2})\in[0,1]^{H-1},
+\]
+where $p_k$ estimates $\Pr(y_k=1)$: whether the imagined return up to $\hat z_{k+1}$ is hallucinated.
+
+\paragraph{Information available.}
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Phase & Available & Not available\\
+\midrule
+World-model training & environment interaction, rewards (standard TD-MPC2) & --- \\
+Detector calibration & world model $\theta$; $N_{\text{cal}}$ logged real episodes & simulator resets\\
+ & $\{(o_{0:T},a_{0:T-1},r_{0:T-1})\}$ collected by the agent & \\
+Inference (run time) & world model $\theta$; current $o_t$; candidate actions $\mathbf a$ & real future $o_{t+j}$, $r_{t+j}$; simulator\\
+\bottomrule
+\end{tabular}
+\end{center}
+Calibration needs only ordinary logged episodes: for every window of length $H$ inside a logged episode,
+the actions and the real rewards are known, so $E_k$ and $y_k$ can be computed without resetting the environment.
+At inference the detector may use only the world model's own outputs along $\mathbf a$.
+
+\paragraph{Our detector (for reference).}
+With $\bar Q=\frac1K\sum_i Q^{(i)}_\theta$, from the imagined rollout we compute Bellman-consistency residuals, e.g.\ the one-step residual
+$\delta_k=\bigl|\bar Q(\hat z_k,a_k)-\bigl(\hat r_k+\gamma V_\theta(\hat z_{k+1})\bigr)\bigr|$ and the residual
+anchored at the real start
+$\bigl|\bar Q(\hat z_0,a_0)-\bigl(\sum_{j\le k}\gamma^j\hat r_j+\gamma^{k+1}V_\theta(\hat z_{k+1})\bigr)\bigr|$,
+plus multi-step, cumulative, bias-corrected and per-head variants, critic disagreement, $V_\theta(\hat z_{k+1})$,
+$\hat r_k$ and $k$. A gradient-boosted tree classifier maps these features to $p_k$; it is fitted on calibration
+labels $y_k$. No extra models are trained.
+
+\section{Evaluation}
+
+\paragraph{Protocol.}
+For each trained world model: collect $N=50$ fresh episodes with the agent's own planner; use the first 25 for
+calibration (thresholds and detector fitting) and the other 25 for testing; use all windows of length $H=12$
+starting at every real time step, with $\mathbf a$ the actions the agent actually took. Planner-chosen action
+sequences are evaluated separately by executing them from saved simulator states.
+
+\paragraph{Metric.}
+Detection quality is the step-stratified AUROC on the test windows:
+\[
+\text{AUROC}_{\text{strat}}=\frac{\sum_k n^+_k n^-_k\,\text{AUROC}_k}{\sum_k n^+_k n^-_k},
+\]
+where $\text{AUROC}_k$ is computed over steps with label $y_k\in\{0,1\}$ at imagined step $k$ only, and $n^\pm_k$
+are the numbers of positives and negatives. Stratifying by $k$ prevents a detector from scoring well merely by
+knowing that errors grow with the horizon. It is reported for all, sudden and gradual hallucinations, with 95\%
+confidence intervals from a bootstrap over test episodes, and compared with published detectors computed on the
+same windows (dynamics-ensemble disagreement, MOBILE-style Bellman-target spread, critic disagreement,
+ELVIS-style UCB).
+
+\paragraph{A correct prediction.}
+$p_k$ is correct to the extent that it ranks hallucinated steps ($y_k=1$) above correct steps ($y_k=0$) at the same
+imagined step $k$. For an operating point, a warning is raised when $p_k$ exceeds a threshold chosen on calibration
+data for a target warning rate.
+
+\section{Downstream question (secondary)}
+Whether the detector improves decisions is evaluated separately by the task success rate of the agent (fraction of
+episodes in which the task is solved at least once), on fixed evaluation seeds shared by all compared methods,
+with differences paired by seed.
+
+\end{document}
