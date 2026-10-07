@@ -1,0 +1,2 @@
+hd_stack_s10, StackCube-v1, bk_grounded_stackcube_s10, 0, 0, --train_episodes 3000
+hd_ycb_s10, PickSingleYCB-v1, p4_grounded_ycb_s10, 0, 0, --train_episodes 3000
