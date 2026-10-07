@@ -93,7 +93,10 @@ def mirror_dir(args):
 	if args.mirror_dir != "auto":
 		return Path(args.mirror_dir)
 	base = mirror.staging_base()
-	return None if base is None else base / "runs" / f"{args.run}_{args.task}_s{args.seed}_{args.steps}"
+	# Every setting that changes training must be in the name, or runs that differ only in it share (and resume
+	# from) one mirror: a 2026-10 bug mixed the uniform / lba / D replay arms this way.
+	variant = "" if getattr(args, "replay", "uniform") == "uniform" else f"_replay-{args.replay}-f{args.replay_frac}-t{args.replay_top}"
+	return None if base is None else base / "runs" / f"{args.run}_{args.task}_s{args.seed}_{args.steps}{variant}"
 
 
 def build_cfg(args, env: ManiSkill3Env):
