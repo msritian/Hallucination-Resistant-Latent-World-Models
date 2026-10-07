@@ -182,6 +182,12 @@ class Trainer:
 		torch.set_float32_matmul_precision("high")
 
 		self.agent = GroundedTDMPC2(self.cfg)
+		if args.offline_data:
+			# TD-MPC2 sizes the buffer as min(buffer_size, steps); with --steps counting updates it can be smaller than
+			# the fixed dataset, and overfilling scrambles episodes (NaN entries -> CUDA assert). Fit the whole dataset.
+			need = args.offline_episodes * (self.env.max_episode_steps + 1)
+			self.cfg.steps = max(int(self.cfg.steps), need)
+			self.cfg.buffer_size = max(int(self.cfg.buffer_size), need)
 		self.buffer = Buffer(self.cfg)
 		self.train_log = CSVLog(self.out / "train.csv")
 		self.eval_log = CSVLog(self.out / "eval.csv")
