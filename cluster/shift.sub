@@ -1,0 +1,35 @@
+# Phase A: shift detection (docs/preregistration_shift.md)
+# Usage: condor_submit shift.sub queue_file=shift_smoke.txt (then shift_runs.txt)
+# Output: results/<name>.tar.gz
+universe = container
+container_image = file:///staging/s/smittal39/tdmpc2_v2.sif
+
+executable = shift.sh
+arguments = $(task) $(grounded) $(episodes) $(cal_episodes) $(extra)
+transfer_input_files = code.tar.gz, results/$(grounded).tar.gz, results/real_$(grounded).tar.gz
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+stream_output = True
+stream_error = True
+
+# Self-checkpointing: exit code 85 = "checkpoint saved, restart me"; ./rr is saved and restored across restarts.
+checkpoint_exit_code = 85
+transfer_checkpoint_files = sh
+transfer_output_files = shift.tar.gz
+transfer_output_remaps = "shift.tar.gz = results/$(name).tar.gz"
+
+log = logs/$(name).log
+output = logs/$(name).$(Cluster).$(Process).out
+error = logs/$(name).$(Cluster).$(Process).err
+
+requirements = (HasCHTCStaging == true)
+request_gpus = 1
+gpus_minimum_capability = 7.0
+gpus_maximum_capability = 9.0
++WantGPULab = true
++GPUJobLength = "short"
+request_cpus = 4
+request_memory = 16GB
+request_disk = 30GB
+
+queue name, task, grounded, episodes, cal_episodes, extra from $(queue_file)

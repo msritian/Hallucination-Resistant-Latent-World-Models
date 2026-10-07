@@ -1,0 +1,2 @@
+shift_stack_s10, StackCube-v1, bk_grounded_stackcube_s10, 20, 0, --conditions none,gain:0.5,gain:0.25,bias:0.3,mass:3,mass:10,obs:0.5,obs:0.1
+shift_stack_s30, StackCube-v1, seed_grounded_stack_s30, 20, 0, --conditions none,gain:0.5,gain:0.25,bias:0.3,mass:3,mass:10,obs:0.5,obs:0.1
