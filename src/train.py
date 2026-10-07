@@ -62,6 +62,9 @@ def parse_args(argv=None):
 	p.add_argument("--replay_refresh", type=int, default=50_000, help="re-score the replay buffer every N steps")
 	p.add_argument("--replay_frac", type=float, default=0.5, help="fraction of each batch from the flagged windows")
 	p.add_argument("--replay_top", type=float, default=0.3, help="fraction of windows kept as flagged")
+	p.add_argument("--offline_data", default=None,
+	               help="offline mode: a checkpoint.pt whose stored episodes form a FIXED dataset; no environment interaction")
+	p.add_argument("--offline_episodes", type=int, default=2000, help="offline mode: use the FIRST N stored episodes")
 	p.add_argument("--eval_seed_start", type=int, default=1000)
 	p.add_argument("--video_freq", type=int, default=100_000, help="save an eval video at least this often (and at the end)")
 	p.add_argument("--ckpt_freq", type=int, default=25_000)
@@ -96,6 +99,8 @@ def mirror_dir(args):
 	# Every setting that changes training must be in the name, or runs that differ only in it share (and resume
 	# from) one mirror: a 2026-10 bug mixed the uniform / lba / D replay arms this way.
 	variant = "" if getattr(args, "replay", "uniform") == "uniform" else f"_replay-{args.replay}-f{args.replay_frac}-t{args.replay_top}"
+	if getattr(args, "offline_data", None):
+		variant += f"_offline-{Path(args.offline_data).parent.parent.name}-n{args.offline_episodes}"
 	return None if base is None else base / "runs" / f"{args.run}_{args.task}_s{args.seed}_{args.steps}{variant}"
 
 
@@ -192,6 +197,17 @@ class Trainer:
 		self.next_refresh = 0   # also refreshed right after a resume (scores are not checkpointed)
 		if resume:
 			self._restore(resume)
+		elif args.offline_data:
+			src = torch.load(args.offline_data, map_location="cpu", weights_only=False)["episodes"]
+			eps = TensorDict(src, batch_size=src["reward"].shape[:2])[:args.offline_episodes]
+			self.episodes = list(eps.unbind(0))
+			self.buffer.load(eps.clone())
+			n = eps.shape[0] * (eps.shape[1] - 1)
+			print(f"Offline dataset: first {eps.shape[0]:,} episodes ({n:,} transitions) of {args.offline_data}; "
+			      f"mean return {float(eps['reward'][:, 1:].sum(1).mean()):.2f} per episode", flush=True)
+		if args.offline_data:   # the fixed dataset, as real episodes for the detector's calibration
+			from src.training.audit_replay import episodes_to_data
+			torch.save(episodes_to_data(self.episodes), self.out / "offline_episodes.pt")
 
 	# ---------------------------------------------------------------- checkpointing
 	def _restore(self, ck):
@@ -279,7 +295,34 @@ class Trainer:
 		            successes=[float(x) for x in successes])
 
 	# ---------------------------------------------------------------- main loop
+	def train_offline(self):
+		"""Updates only, from the fixed dataset loaded in __init__ (no environment steps); same evaluation and
+		checkpointing as online training. ``--steps`` counts gradient updates."""
+		args = self.args
+		while self.step < args.steps:
+			if self.step >= self.next_eval:
+				m = self.evaluate(record_video=False)
+				m.pop("successes")
+				self.eval_log.write(dict(step=self.step, elapsed=round(self.elapsed(), 1), **m))
+				print(f"[eval] update {self.step:,}  success {m['episode_success']:.2f}", flush=True)
+				self.next_eval += args.eval_freq
+			if self.step >= self.next_ckpt:
+				self.save_checkpoint()
+				self.next_ckpt += args.ckpt_freq
+			if time.time() - self.job_start > args.max_hours * 3600:
+				self.save_checkpoint()
+				print(f"Stopping at update {self.step:,} to be resumed (exit {CHECKPOINT_EXIT_CODE}).")
+				sys.exit(CHECKPOINT_EXIT_CODE)
+			train_metrics = self.agent.update(self.buffer)
+			if self.step % 1000 == 0:
+				self.train_log.write(dict(step=self.step, elapsed=round(self.elapsed(), 1),
+				                          **{k: float(v) for k, v in train_metrics.items()}))
+			self.step += 1
+		self._finish()
+
 	def train(self):
+		if self.args.offline_data:
+			return self.train_offline()
 		args, env = self.args, self.env
 		done, info, train_metrics = True, None, {}
 		sync = torch.cuda.synchronize if torch.cuda.is_available() else (lambda: None)
@@ -365,6 +408,10 @@ class Trainer:
 				timers["update"] += time.time() - t0
 			self.step += 1
 
+		self._finish()
+
+	def _finish(self):
+		args = self.args
 		kept = []
 		m = self.evaluate(record_video=True, episodes=args.final_eval_episodes, keep=kept)
 		final = dict(step=self.step, seeds=list(range(args.eval_seed_start, args.eval_seed_start + len(m["successes"]))), **m)

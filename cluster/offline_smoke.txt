@@ -1,0 +1,1 @@
+smoke_off_stack, StackCube-v1, seed_stock_stack_s20, 200, 2000, 1, --eval_freq 1000 --eval_episodes 2 --final_eval_episodes 3 --mirror_dir none
