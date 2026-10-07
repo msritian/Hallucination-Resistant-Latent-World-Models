@@ -17,3 +17,10 @@ Go/no-go (decided now):
 Amendment (2026-10-06, before the pilot started): added a reference arm "H3" (standard 3-step planning, the TD-MPC2
 setting). Extra condition for usefulness: success(corrected, H12) must exceed success(H3); otherwise Idea 1 only repairs
 a planner that is worse than TD-MPC2's own.
+
+## Round 2 (2026-10-07, after the pilot; exploratory, decided before these runs)
+Pilot: YCB oracle 0.56 vs H3 0.36 (room exists), but no rule captured it. New rules, fitted on calibration only:
+`relvalue` (trees predict each candidate's true value relative to the other candidates of the same decision, from
+audit features + imagined score) and `valuepred` (true value directly). Runs: YCB H12, YCB H3, Peg H3 (H3 = TD-MPC2's
+own horizon: measures the room for standard TD-MPC2). Promising if, on held-out calibration decisions, a learned rule
+cuts regret clearly below imagined AND the ensemble penalties, and in closed loop beats H3 by >= 0.05.

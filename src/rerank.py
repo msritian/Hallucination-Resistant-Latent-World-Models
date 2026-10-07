@@ -24,7 +24,8 @@ import torch
 
 from src.preflight.run_preflight import CRITIC_FEATURES, _features, calibration_bias, plan_signals, value_fn, windows
 
-RULES = ("H3", "default", "imagined", "corrected", "penD", "penM", "oracle", "random")
+RULES = ("H3", "default", "imagined", "corrected", "relvalue", "valuepred", "penD", "penM", "oracle", "random")
+LEARNED = ("corrected", "relvalue", "valuepred")
 
 
 # ------------------------------------------------------------------------------------------------ candidates
@@ -65,12 +66,21 @@ def true_scores(agent, sim, snap, acts):
 	return (disc * rew).sum(0) + agent.discount ** H * v_end
 
 
+def _inputs(X, imagined, centered: bool):
+	Z = torch.cat([X, imagined.view(-1, 1)], -1)
+	return (Z - Z.mean(0, keepdim=True)) if centered else Z
+
+
 def choose(rule, imagined, X, unc, model, lam, gen, true=None):
 	K = len(imagined)
 	if rule == "imagined":
 		return int(imagined.argmax())
 	if rule == "corrected":
-		return int((imagined - torch.as_tensor(model.predict(X.numpy()), dtype=torch.float32)).argmax())
+		return int((imagined - torch.as_tensor(model["corrected"].predict(X.numpy()), dtype=torch.float32)).argmax())
+	if rule == "relvalue":   # true value relative to the other candidates of the same decision
+		return int(model["relvalue"].predict(_inputs(X, imagined, True).numpy()).argmax())
+	if rule == "valuepred":  # true value directly
+		return int(model["valuepred"].predict(_inputs(X, imagined, False).numpy()).argmax())
 	if rule in ("penD", "penM"):
 		return int((imagined - lam[rule] * unc[rule[-1]]).argmax())
 	if rule == "oracle":
@@ -100,11 +110,17 @@ def collect_calibration(agent, env, sim, planner_fn, bias, K, episodes, seed_sta
 
 
 def fit_correction(recs):
+	"""Three learned rules from the calibration decisions (each with its K candidates and their TRUE scores)."""
 	from sklearn.ensemble import HistGradientBoostingRegressor
+	reg = lambda: HistGradientBoostingRegressor(max_iter=200, learning_rate=0.05, max_leaf_nodes=15, l2_regularization=1.0,
+	                                            random_state=0)
 	X = torch.cat([r["X"] for r in recs]).numpy()
-	y = torch.cat([r["imagined"] - r["true"] for r in recs]).numpy()     # signed over-estimation
-	return HistGradientBoostingRegressor(max_iter=200, learning_rate=0.05, max_leaf_nodes=15, l2_regularization=1.0,
-	                                     random_state=0).fit(X, y)
+	over = torch.cat([r["imagined"] - r["true"] for r in recs]).numpy()                  # signed over-estimation
+	Zc = torch.cat([_inputs(r["X"], r["imagined"], True) for r in recs]).numpy()
+	rel = torch.cat([r["true"] - r["true"].mean() for r in recs]).numpy()                # true value vs the others
+	Z = torch.cat([_inputs(r["X"], r["imagined"], False) for r in recs]).numpy()
+	tru = torch.cat([r["true"] for r in recs]).numpy()
+	return dict(corrected=reg().fit(X, over), relvalue=reg().fit(Zc, rel), valuepred=reg().fit(Z, tru))
 
 
 def tune_lambda(recs, key):
@@ -123,7 +139,7 @@ def offline_quality(recs, model, lam):
 	"""Mean regret (best true score - chosen true score) of each rule on held-out calibration decisions."""
 	gen = torch.Generator().manual_seed(0)
 	out = {}
-	for rule in ("imagined", "corrected", "penD", "penM", "random"):
+	for rule in ("imagined", "corrected", "relvalue", "valuepred", "penD", "penM", "random"):
 		if rule.startswith("pen") and lam.get(rule) is None:
 			continue
 		reg = [float(r["true"].max() - r["true"][choose(rule, r["imagined"], r["X"], r["unc"], model, lam, gen)]) for r in recs]
@@ -143,7 +159,7 @@ def run_rule(agent, env, sim, planner_fn, rule, bias, K, model, lam, episodes, s
 			action = planner.act(obs, t0=t == 0)
 			if rule != "default":
 				acts, imagined = candidates(planner, K)
-				X, unc = plan_features(agent, obs, acts, bias) if rule in ("corrected", "penD", "penM") else (None, None)
+				X, unc = plan_features(agent, obs, acts, bias) if rule in LEARNED + ("penD", "penM") else (None, None)
 				true = true_scores(agent, sim, sim.save(), acts) if rule == "oracle" else None
 				action = acts[0, choose(rule, imagined.cpu(), X, unc, model, lam, gen, true)].cpu()
 			obs, _, done, info = env.step(action)
@@ -191,6 +207,7 @@ def main(argv=None):
 		with torch.no_grad():
 			bias = calibration_bias(agent, agent.model.encode(o.to(dev), None), act.to(dev), 1.0, a.horizon).to(dev)
 		recs = collect_calibration(agent, env, sim, planner_fn, bias, a.K, a.cal_episodes, a.cal_seed_start)
+		torch.save(recs, out / "calibration.pt")   # every candidate's features, imagined and true score
 		half = a.cal_episodes // 2
 		fit, held = [r for r in recs if r["ep"] < half], [r for r in recs if r["ep"] >= half]
 		model_h = fit_correction(fit)

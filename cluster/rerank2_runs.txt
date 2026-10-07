@@ -1,0 +1,3 @@
+rr2_ycb_h12, PickSingleYCB-v1, p4_grounded_ycb_s10, 50, 20, --horizon 12
+rr2_ycb_h3, PickSingleYCB-v1, p4_grounded_ycb_s10, 50, 20, --horizon 3
+rr2_peg_h3, PegInsertionSide-v1, p4_grounded_peg_s10, 50, 20, --horizon 3

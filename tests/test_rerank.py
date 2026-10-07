@@ -36,7 +36,7 @@ def test_rules_offline_and_true_scores():
 	assert abs(float(true[1]) - expect) < 1e-4
 	model, lam = rr.fit_correction(recs), {r: rr.tune_lambda(recs, r[-1]) for r in ("penD", "penM")}
 	q = rr.offline_quality(recs, model, lam)
-	assert set(q) == {"imagined", "corrected", "penD", "penM", "random"} and all(v >= 0 for v in q.values())
+	assert set(q) == {"imagined", "corrected", "relvalue", "valuepred", "penD", "penM", "random"} and all(v >= 0 for v in q.values())
 	for rule in [r for r in rr.RULES if r != "H3"]:
 		rows = rr.run_rule(agent, env, sim, pf, rule, bias, 8, model, lam, 1, 0)
 		assert rows[0]["arm"] == rule and rows[0]["seed"] == 0
