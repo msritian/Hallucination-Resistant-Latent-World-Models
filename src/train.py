@@ -62,6 +62,10 @@ def parse_args(argv=None):
 	p.add_argument("--replay_refresh", type=int, default=50_000, help="re-score the replay buffer every N steps")
 	p.add_argument("--replay_frac", type=float, default=0.5, help="fraction of each batch from the flagged windows")
 	p.add_argument("--replay_top", type=float, default=0.3, help="fraction of windows kept as flagged")
+	p.add_argument("--value_expansion", choices=["none", "fixed", "const", "lba", "D"], default="none",
+	               help="hallucination-aware value expansion of the critic's targets (src/training/value_expansion.py)")
+	p.add_argument("--ve_h", type=int, default=5, help="imagined steps of the value expansion")
+	p.add_argument("--ve_start", type=int, default=50_000, help="environment step at which value expansion starts")
 	p.add_argument("--offline_data", default=None,
 	               help="offline mode: a checkpoint.pt whose stored episodes form a FIXED dataset; no environment interaction")
 	p.add_argument("--offline_episodes", type=int, default=2000, help="offline mode: use the FIRST N stored episodes")
@@ -99,6 +103,8 @@ def mirror_dir(args):
 	# Every setting that changes training must be in the name, or runs that differ only in it share (and resume
 	# from) one mirror: a 2026-10 bug mixed the uniform / lba / D replay arms this way.
 	variant = "" if getattr(args, "replay", "uniform") == "uniform" else f"_replay-{args.replay}-f{args.replay_frac}-t{args.replay_top}"
+	if getattr(args, "value_expansion", "none") != "none":
+		variant += f"_ve-{args.value_expansion}-h{args.ve_h}-s{args.ve_start}"
 	if getattr(args, "offline_data", None):
 		variant += f"_offline-{Path(args.offline_data).parent.parent.name}-n{args.offline_episodes}"
 	return None if base is None else base / "runs" / f"{args.run}_{args.task}_s{args.seed}_{args.steps}{variant}"
@@ -201,6 +207,12 @@ class Trainer:
 			from src.training.audit_replay import AuditReplay
 			self.sampler = AuditReplay(self.buffer, args.replay, frac=args.replay_frac, top=args.replay_top, seed=args.seed)
 		self.next_refresh = 0   # also refreshed right after a resume (scores are not checkpointed)
+		self.ve = None
+		if args.value_expansion != "none":
+			from src.training.value_expansion import ValueExpansion
+			self.ve = ValueExpansion(args.value_expansion, h=args.ve_h, start_step=args.ve_start, seed=args.seed)
+			self.agent.value_expansion = self.ve
+		self.next_ve_refresh = args.ve_start
 		if resume:
 			self._restore(resume)
 		elif args.offline_data:
@@ -385,6 +397,13 @@ class Trainer:
 					self.sampler.refresh(self.agent, self.episodes)
 					print(f"[replay] step {self.step:,}  refreshed in {time.time() - t0:.0f} s  {self.sampler.stats}", flush=True)
 					self.next_refresh = self.step + args.replay_refresh
+
+				if self.ve is not None and self.step >= self.next_ve_refresh and len(self.episodes) >= 50:
+					t0 = time.time()
+					self.ve.refresh(self.agent, self.episodes)   # activates expansion; refits the audit (lba)
+					print(f"[value expansion] step {self.step:,}  {self.ve.mode} refreshed in {time.time() - t0:.0f} s  "
+					      f"{self.ve.stats}", flush=True)
+					self.next_ve_refresh = self.step + 50_000
 
 				t0 = time.time()
 				obs = env.reset()

@@ -1,0 +1,10 @@
+ve_none_stack_s70, stock_aux, StackCube-v1, 70, 300000, --no_compile --max_hours 3 --eval_freq 25000 --eval_episodes 10 --final_eval_episodes 100 --video_freq 100000000 --ckpt_freq 25000 --value_expansion none
+ve_fixed_stack_s70, stock_aux, StackCube-v1, 70, 300000, --no_compile --max_hours 3 --eval_freq 25000 --eval_episodes 10 --final_eval_episodes 100 --video_freq 100000000 --ckpt_freq 25000 --value_expansion fixed
+ve_const_stack_s70, stock_aux, StackCube-v1, 70, 300000, --no_compile --max_hours 3 --eval_freq 25000 --eval_episodes 10 --final_eval_episodes 100 --video_freq 100000000 --ckpt_freq 25000 --value_expansion const
+ve_D_stack_s70, stock_aux, StackCube-v1, 70, 300000, --no_compile --max_hours 3 --eval_freq 25000 --eval_episodes 10 --final_eval_episodes 100 --video_freq 100000000 --ckpt_freq 25000 --value_expansion D
+ve_lba_stack_s70, stock_aux, StackCube-v1, 70, 300000, --no_compile --max_hours 3 --eval_freq 25000 --eval_episodes 10 --final_eval_episodes 100 --video_freq 100000000 --ckpt_freq 25000 --value_expansion lba
+ve_none_stack_s71, stock_aux, StackCube-v1, 71, 300000, --no_compile --max_hours 3 --eval_freq 25000 --eval_episodes 10 --final_eval_episodes 100 --video_freq 100000000 --ckpt_freq 25000 --value_expansion none
+ve_fixed_stack_s71, stock_aux, StackCube-v1, 71, 300000, --no_compile --max_hours 3 --eval_freq 25000 --eval_episodes 10 --final_eval_episodes 100 --video_freq 100000000 --ckpt_freq 25000 --value_expansion fixed
+ve_const_stack_s71, stock_aux, StackCube-v1, 71, 300000, --no_compile --max_hours 3 --eval_freq 25000 --eval_episodes 10 --final_eval_episodes 100 --video_freq 100000000 --ckpt_freq 25000 --value_expansion const
+ve_D_stack_s71, stock_aux, StackCube-v1, 71, 300000, --no_compile --max_hours 3 --eval_freq 25000 --eval_episodes 10 --final_eval_episodes 100 --video_freq 100000000 --ckpt_freq 25000 --value_expansion D
+ve_lba_stack_s71, stock_aux, StackCube-v1, 71, 300000, --no_compile --max_hours 3 --eval_freq 25000 --eval_episodes 10 --final_eval_episodes 100 --video_freq 100000000 --ckpt_freq 25000 --value_expansion lba
