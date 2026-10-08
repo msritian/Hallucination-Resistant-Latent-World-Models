@@ -29,7 +29,7 @@ gpus_maximum_capability = 9.0
 +WantGPULab = true
 +GPUJobLength = "short"
 request_cpus = 4
-request_memory = 16GB
+request_memory = 8GB
 request_disk = 30GB
 
 queue name, task, grounded, episodes, cal_episodes, extra from $(queue_file)
