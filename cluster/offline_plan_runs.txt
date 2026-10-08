@@ -1,0 +1,2 @@
+op_stack, StackCube-v1, off2_stack, 50
+op_ycb, PickSingleYCB-v1, off2_ycb, 50
