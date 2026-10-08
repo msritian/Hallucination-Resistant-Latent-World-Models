@@ -74,6 +74,14 @@ def audit_task(agent, view, data, task_idx, stride):
 	scores = {"LBA": torch.as_tensor(lba["clf"].predict_proba(X.numpy())[:, 1]).view(L, -1).float()}
 	for k in ("B", "E", "A", "Aa"):
 		scores[k] = sig[k][:L].cpu().float()
+	# controls (same trees, labels and calibration data): which inputs carry the result?
+	from src.preflight.run_preflight import make_gbt
+	Xc_all = lba["X_cal"]; yc, kc = lba["y_cal"], lba["keep_cal"]
+	nb_cols = list(range(X.shape[1] - 3, X.shape[1]))          # imagined value, predicted reward, step
+	bell_cols = list(range(0, X.shape[1] - 3)) + [X.shape[1] - 1]   # Bellman signals (+ running max) and step only
+	for name, cols in (("NoBellman", nb_cols), ("BellmanOnly", bell_cols)):
+		clf = make_gbt().fit(Xc_all[kc][:, cols].numpy(), yc[kc].numpy())
+		scores[name] = torch.as_tensor(clf.predict_proba(X[:, cols].numpy())[:, 1]).view(L, -1).float()
 	Eev = return_error(roll, reward_windows(ev, H, range(M)), view.discount)
 	# labels exactly as in the ManiSkill results: thresholds from calibration one-step errors
 	o_c, a_c, _ = windows(cal, H, range(cal["obs"].shape[0]))

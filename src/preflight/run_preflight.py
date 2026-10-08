@@ -430,7 +430,8 @@ def fit_lba(agent, data: dict, H: int, beta: float, episode_ids=None, task=None)
 	clf = make_gbt().fit(X, y[keep].numpy())
 	idx = torch.randperm(X_all.shape[0], generator=torch.Generator().manual_seed(0))[:2000]
 	return dict(bias=bias, clf=clf, eps_clean=eps_clean, eps_hall=eps_hall, L=L, n_pos=int(y[keep].sum()),
-	            X_sample=X_all[idx])  # real features, to check a re-implementation of the trees against sklearn
+	            X_sample=X_all[idx],  # real features, to check a re-implementation of the trees against sklearn
+	            X_cal=X_all, y_cal=y, keep_cal=keep)   # for control fits on exactly the same calibration data
 
 
 def learned_audits(sig_cal: dict, roll_cal, E_cal, sig_ev: dict, roll_ev, E_shape) -> dict:
