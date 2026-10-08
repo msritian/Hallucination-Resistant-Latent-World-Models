@@ -1,0 +1,67 @@
+{
+ "none": {
+  "success": 0.66,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "LBA_l0.5": {
+  "success": 0.5,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "LBA_l1.0": {
+  "success": 0.1,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "LBA_l2.0": {
+  "success": 0.0,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "D_l0.5": {
+  "success": 0.78,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "D_l1.0": {
+  "success": 0.26,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "D_l2.0": {
+  "success": 0.02,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "M_l0.5": {
+  "success": 0.7,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "M_l1.0": {
+  "success": 0.56,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "M_l2.0": {
+  "success": 0.48,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "B_l0.5": {
+  "success": 0.6,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "B_l1.0": {
+  "success": 0.22,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "B_l2.0": {
+  "success": 0.0,
+  "warning_rate": 0.0,
+  "episodes": 50
+ }
+}
