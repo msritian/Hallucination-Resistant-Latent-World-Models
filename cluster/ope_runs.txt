@@ -1,0 +1,6 @@
+ope_stack_s10, StackCube-v1, bk_grounded_stackcube_s10, 30, 0, --ope
+ope_stack_s20, StackCube-v1, seed_grounded_stack_s20, 30, 0, --ope
+ope_stack_s30, StackCube-v1, seed_grounded_stack_s30, 30, 0, --ope
+ope_ycb_s10, PickSingleYCB-v1, p4_grounded_ycb_s10, 30, 0, --ope
+ope_ycb_s20, PickSingleYCB-v1, seed_grounded_ycb_s20, 30, 0, --ope
+ope_ycb_s30, PickSingleYCB-v1, seed_grounded_ycb_s30, 30, 0, --ope

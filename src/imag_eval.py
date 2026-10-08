@@ -23,6 +23,9 @@ POLICIES = {   # name: (sigma, bias on xyz translation, random)
 	"pi": (0.0, 0.0, False), "pi_n0.3": (0.3, 0.0, False), "pi_n0.6": (0.6, 0.0, False), "pi_n1.0": (1.0, 0.0, False),
 	"pi_bias0.3": (0.0, 0.3, False), "random": (0.0, 0.0, True),
 }
+OPE_POLICIES = dict(POLICIES, **{   # wider range of quality and distribution shift for the OPE trust study
+	"pi_n0.15": (0.15, 0.0, False), "pi_n2.0": (2.0, 0.0, False), "pi_bias-0.3": (0.0, -0.3, False),
+	"pi_bias0.15": (0.0, 0.15, False)})
 
 
 def act(model, z, eps_t, spec):
@@ -54,6 +57,7 @@ def imagined_episode(agent, o0, T, eps, spec, lba, H=12):
 	model, g = agent.model, float(agent.discount)
 	z = model.encode(o0.to(dev).view(1, -1), None)
 	scores = {k: [] for k in ("LBA", "D", "M", "B")}
+	raw = {k: [] for k in ("sarsa", "A", "Aa", "D", "B")}   # per-step raw consistency / uncertainty (OPE trust study)
 	R_hat, t = 0.0, 0
 	while t < T:
 		h = min(H, T - t)
@@ -65,6 +69,15 @@ def imagined_episode(agent, o0, T, eps, spec, lba, H=12):
 		acts = torch.stack(acts)                             # [h, 1, A]
 		sig, roll = plan_signals(agent, z, acts, 1.0, bias=lba["bias"].to(dev)[:h])
 		R_hat += sum(g ** (t + k) * float(roll.r_hat[k]) for k in range(h))
+		q = roll.q_sa.view(-1)
+		# target-policy (SARSA-style) residual: |Q(z_k, a_k) - (r_k + gamma Q(z_{k+1}, a_{k+1}))|, a_{k+1} = the evaluated policy's action
+		raw["sarsa"] += (q[:-1] - (roll.r_hat.view(-1)[:-1] + g * q[1:])).abs().tolist()
+		raw["A"] += sig["A"].view(-1).tolist()
+		if t == 0:
+			raw["Aa"] += sig["Aa"].view(-1).tolist()
+		for k in ("D", "B"):
+			if k in sig:
+				raw[k] += sig[k].view(-1).tolist()
 		if h == H:                                           # full audit chunk (the audit was fitted on 12-step windows)
 			X = _features({k: v.cpu() for k, v in sig.items()}, roll, CRITIC_FEATURES, H - 1, True)
 			scores["LBA"].append(float(lba["clf"].predict_proba(X.numpy())[:, 1].max()))
@@ -72,7 +85,9 @@ def imagined_episode(agent, o0, T, eps, spec, lba, H=12):
 				if k in sig:
 					scores[k].append(float(sig[k][:H - 1].max()))
 		z, t = roll.z[-1], t + h
-	return R_hat, {k: max(v) if v else float("nan") for k, v in scores.items()}
+	out = {k: max(v) if v else float("nan") for k, v in scores.items()}
+	out.update({f"{k}_mean": sum(v) / len(v) if v else float("nan") for k, v in raw.items()})
+	return R_hat, out
 
 
 def main(argv=None):
@@ -87,6 +102,7 @@ def main(argv=None):
 	p.add_argument("--starts", type=int, default=30)
 	p.add_argument("--seed_start", type=int, default=9000)
 	p.add_argument("--out", required=True)
+	p.add_argument("--ope", action="store_true", help="the wider policy set of the OPE trust study")
 	a = p.parse_args(argv)
 	out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
 	agent = load_agent(a.model, a.run, a.task)
@@ -94,7 +110,7 @@ def main(argv=None):
 	env = ManiSkill3Env(a.task, seed=a.seed_start)
 	A = agent.cfg.action_dim
 	rows = []
-	for name, spec in POLICIES.items():
+	for name, spec in (OPE_POLICIES if a.ope else POLICIES).items():
 		for i in range(a.starts):
 			seed = a.seed_start + i
 			gen = torch.Generator().manual_seed(seed)
