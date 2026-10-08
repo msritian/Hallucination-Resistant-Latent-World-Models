@@ -85,10 +85,39 @@ def signal_audit(agent, H, mu, sd, data, eps, gamma_c=0.9, Hh=12):
 	g = torch.stack([H.g(zs[k], a[k].to(dev)) for k in range(Hh)])
 	g_next = torch.stack([H.g(zs[k + 1], pi_mean(agent.model, zs[k + 1])) for k in range(Hh)])
 	delta = (g - (c_hat + gamma_c * g_next)).abs()[:L].cpu()                                   # [L, M, D]
+	# per-signal ensemble disagreement (rival localiser): spread over dynamics heads of the next-step signal prediction
+	ens = None
+	if agent.num_aux_dynamics > 0:
+		heads = agent.aux_dynamics_heads()
+		ens = torch.stack([torch.stack([H.c(h(zs[k], a[k].to(dev)), a[k + 1].to(dev)) for h in heads]).std(0)
+		                   for k in range(L)]).cpu()                                                # [L, M, D]
 	c_real = ((o[1:] - mu) / sd)                                                                 # [H, M, D] real next signals
 	disc = gamma_c ** torch.arange(Hh, dtype=torch.float32).view(-1, 1, 1)
 	E = torch.cumsum(disc * (c_hat.cpu() - c_real), 0).abs()[:L]
-	return delta, E
+	return delta, E, ens
+
+
+def obs_names(task):
+	"""Names of the flattened state-observation dims (ManiSkill flattens the state dict in key order); [] if unavailable."""
+	try:
+		import gymnasium as gym
+		import mani_skill.envs  # noqa: F401
+		env = gym.make(task, num_envs=1, obs_mode="state_dict", sim_backend="cpu", control_mode="pd_ee_delta_pose")
+		obs, _ = env.reset(seed=0)
+		env.close()
+		names = []
+		def walk(prefix, x):
+			if isinstance(x, dict):
+				for k, v in x.items():
+					walk(f"{prefix}/{k}" if prefix else k, v)
+			else:
+				n = int(torch.as_tensor(x).reshape(-1).numel())
+				names.extend([f"{prefix}[{i}]" for i in range(n)])
+		walk("", obs)
+		return names
+	except Exception as exc:
+		print(f"signal names unavailable: {exc!r}", flush=True)
+		return []
 
 
 def main(argv=None):
@@ -117,8 +146,8 @@ def main(argv=None):
 	data = torch.load(a.episodes_file)
 	Ne = data["obs"].shape[0]
 	cal, ev = list(range(Ne // 2)), list(range(Ne // 2, Ne))
-	dc, Ec = signal_audit(agent, H, mu, sd, data, cal)
-	de, Ee = signal_audit(agent, H, mu, sd, data, ev)
+	dc, Ec, ens_c = signal_audit(agent, H, mu, sd, data, cal)
+	de, Ee, ens_e = signal_audit(agent, H, mu, sd, data, ev)
 	L = dc.shape[0]
 	steps_e = torch.arange(L).view(-1, 1).expand(L, de.shape[1])
 	res = {}
@@ -131,6 +160,7 @@ def main(argv=None):
 		y, keep = Ee[..., d] > hi, (Ee[..., d] > hi) | (Ee[..., d] <= lo)
 		if y[keep].sum() >= 5 and (~y[keep]).sum() >= 5:
 			per.append(stratified_auroc(de[..., d][keep], y[keep], steps_e[keep]))
+			res.setdefault("_dims", []).append(d)
 	res["per_signal_auroc_mean"] = sum(per) / len(per) if per else float("nan")
 	res["per_signal_auroc"] = per
 
@@ -141,6 +171,18 @@ def main(argv=None):
 	hit = ((de / s_d).argmax(-1) == (Ee / s_e).argmax(-1))[hall]
 	res["localisation_top1"] = float(hit.float().mean()) if hall.any() else float("nan")
 	res["localisation_chance"] = 1.0 / dc.shape[-1]
+	# baselines: always guess the signal most often wrong on calibration; per-signal ensemble disagreement
+	hall_c = (Ec / s_e).max(-1).values > torch.quantile((Ec / s_e).max(-1).values, 0.99)
+	majority = int(torch.bincount((Ec / s_e).argmax(-1)[hall_c], minlength=dc.shape[-1]).argmax()) if hall_c.any() else 0
+	res["localisation_majority"] = float(((Ee / s_e).argmax(-1)[hall] == majority).float().mean()) if hall.any() else float("nan")
+	if ens_e is not None:
+		s_n = ens_c.flatten(0, 1).median(0).values + 1e-6
+		res["localisation_ensemble"] = float(((ens_e / s_n).argmax(-1) == (Ee / s_e).argmax(-1))[hall].float().mean()) if hall.any() else float("nan")
+	# which signals are most often the wrong one (named when names are available)
+	if hall.any():
+		cnt = torch.bincount((Ee / s_e).argmax(-1)[hall], minlength=dc.shape[-1])
+		res["most_wrong_signals"] = [[int(i), int(cnt[i])] for i in cnt.argsort(descending=True)[:5]]
+	res["per_signal_auroc_by_dim"] = {}
 
 	# reward-free detection of REWARD hallucination: trees on signal-residual summaries only
 	g = float(agent.discount)
@@ -175,6 +217,18 @@ def main(argv=None):
 	clf3 = make_gbt().fit(Xb[kc.reshape(-1)].numpy(), yc.reshape(-1)[kc.reshape(-1)].numpy())
 	p3 = torch.as_tensor(clf3.predict_proba(Xbe.numpy())[:, 1]).view(L, -1).float()
 	res["combined_auroc"] = stratified_auroc(p3[ke], ye[ke], steps_e[ke])
+	# reward-free rival: ensemble disagreement D (raw, per step) on the same windows and labels
+	def d_scores(eps):
+		o, ac, _ = windows(data, 12, eps)
+		sig, _, _ = rollout_signals(agent, agent.model.encode(o.to(dev), None), ac.to(dev), 1.0)
+		return sig["D"][:L].cpu() if "D" in sig else None
+	Dd = d_scores(ev)
+	if Dd is not None:
+		res["ensemble_D_auroc"] = stratified_auroc(Dd[ke], ye[ke], steps_e[ke])
+	names = obs_names(a.task)
+	res["signal_names"] = names if len(names) == dc.shape[-1] else []   # only if the layout matches exactly
+	res["per_signal_auroc_by_dim"] = {(res["signal_names"][d] if res["signal_names"] else str(d)): v
+	                                  for d, v in zip(res.pop("_dims", []), res["per_signal_auroc"])}
 	(out / "horde.json").write_text(json.dumps(res, indent=1))
 	print(json.dumps({k: v for k, v in res.items() if k != "per_signal_auroc"}, indent=1), flush=True)
 

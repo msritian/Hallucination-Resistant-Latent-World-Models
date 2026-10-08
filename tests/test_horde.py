@@ -22,4 +22,4 @@ def test_horde_end_to_end(tmp_path, monkeypatch):
 	         "--episodes_file", str(tmp_path / "ep.pt"), "--updates", "50", "--out", str(tmp_path / "o")])
 	r = json.loads((tmp_path / "o" / "horde.json").read_text())
 	assert {"per_signal_auroc_mean", "localisation_top1", "reward_free_auroc", "reward_audit_auroc", "combined_auroc"} <= set(r)
-	assert r["localisation_chance"] == 1 / OBS
+	assert r["localisation_chance"] == 1 / OBS and "localisation_majority" in r and "localisation_ensemble" in r and "ensemble_D_auroc" in r
