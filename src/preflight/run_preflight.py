@@ -106,24 +106,24 @@ def return_error(roll, r_true: torch.Tensor, discount: float) -> torch.Tensor:
 
 
 @torch.no_grad()
-def rollout_signals(agent, z_real, actions, beta: float, inject=None, bias=None, ensemble: bool = True):
+def rollout_signals(agent, z_real, actions, beta: float, inject=None, bias=None, ensemble: bool = True, task=None):
 	"""All signals [H, M], the true latent error e_{t+1} [H, M], and the rollout, for one batch of replays.
 
 	``bias`` [H]: the critic's typical signed residual on correct steps (from calibration). When given, adds the
 	bias-corrected residuals Ab (one step) and Acb (cumulative)."""
-	sig, roll = plan_signals(agent, z_real[0], actions, beta, inject=inject, bias=bias, ensemble=ensemble)
+	sig, roll = plan_signals(agent, z_real[0], actions, beta, inject=inject, bias=bias, ensemble=ensemble, task=task)
 	err = (roll.z[1:] - z_real[1:]).norm(dim=-1)
 	return sig, err, roll
 
 
 @torch.no_grad()
-def plan_signals(agent, z0, actions, beta: float, inject=None, bias=None, ensemble: bool = True):
+def plan_signals(agent, z0, actions, beta: float, inject=None, bias=None, ensemble: bool = True, task=None):
 	"""All signals [H, M] and the rollout for imagined rollouts from z0 [M, d] along actions [H, M, A].
 
 	Needs only the start latent, so it also scores plans the robot has not executed (run-time monitoring).
 	``ensemble=False`` skips the dynamics-ensemble signals D and M (faster; not inputs of the learned audit)."""
 	cfg, model = agent.cfg, agent.model
-	roll = audit_rollout(model, cfg, z0, actions, float(agent.discount), inject=inject)
+	roll = audit_rollout(model, cfg, z0, actions, float(agent.discount), task=task, inject=inject)   # task: multi-task models
 	sig = {
 		"A": roll.delta.squeeze(-1),
 		"B": roll.critic_spread().squeeze(-1),
@@ -131,7 +131,7 @@ def plan_signals(agent, z0, actions, beta: float, inject=None, bias=None, ensemb
 		# Exploratory variants (post-hoc, 2026-09-28; not part of the gate):
 		"Ao": roll.optimism().squeeze(-1),                                  # one-sided (optimistic) residual
 		"P": roll.head_residual_spread().squeeze(-1),                       # per-head residual spread
-		"At": training_target_residual(model, cfg, roll).squeeze(-1),       # residual vs the critic's training target
+		"At": training_target_residual(model, cfg, roll, task).squeeze(-1),  # residual vs the critic's training target
 		# Gradual-drift variants (2026-09-28; designed on the s10 development models):
 		"Aa": roll.anchored_residual().squeeze(-1),                         # multi-step residual anchored at the real start
 		"Ac": roll.cumulative_signed_residual().squeeze(-1),                # cumulative signed residual (CUSUM-style)
@@ -142,7 +142,7 @@ def plan_signals(agent, z0, actions, beta: float, inject=None, bias=None, ensemb
 		disc = float(agent.discount) ** torch.arange(excess.shape[0], device=excess.device, dtype=excess.dtype).view(-1, 1)
 		sig["Ab"] = excess.abs()
 		sig["Acb"] = torch.cumsum(disc * excess, 0).abs()
-	if ensemble and agent.num_aux_dynamics > 0:
+	if ensemble and getattr(agent, "num_aux_dynamics", 0) > 0:
 		heads = agent.aux_dynamics_heads()
 		sig["D"] = dynamics_disagreement(heads, roll.z, actions).squeeze(-1)
 		sig["M"] = bellman_target_spread(heads, model, cfg, roll, actions).squeeze(-1)
@@ -397,17 +397,17 @@ def make_gbt():
 	                                      l2_regularization=1.0, class_weight="balanced", random_state=0)
 
 
-def calibration_bias(agent, z, actions, beta: float, H: int) -> torch.Tensor:
+def calibration_bias(agent, z, actions, beta: float, H: int, task=None) -> torch.Tensor:
 	"""The critic's typical signed residual per step [H] on ground-truth-clean replays (as in evaluate_model)."""
 	with torch.no_grad():
-		_, err, roll = rollout_signals(agent, z, actions, beta)
+		_, err, roll = rollout_signals(agent, z, actions, beta, task=task)
 	err = err.cpu()
 	clean = clean_prefix_mask(err, error_thresholds(err, CAL["eps_clean_pct"], CAL["eps_hall_pct"]).eps_clean)
 	signed = roll.signed_residual().squeeze(-1).cpu()
 	return torch.stack([signed[t][clean[t]].median() if clean[t].any() else signed[t].median() for t in range(H)])
 
 
-def fit_lba(agent, data: dict, H: int, beta: float, episode_ids=None) -> dict:
+def fit_lba(agent, data: dict, H: int, beta: float, episode_ids=None, task=None) -> dict:
 	"""Fit the learned Bellman audit on real episodes (same features, labels and trees as ``learned_audits``).
 
 	Returns bias [H] (for Ab, Acb), the fitted trees, and the label thresholds on the return error."""
@@ -415,9 +415,10 @@ def fit_lba(agent, data: dict, H: int, beta: float, episode_ids=None) -> dict:
 	dev = next(agent.model.parameters()).device
 	o, a, _ = windows(data, H, episode_ids)
 	with torch.no_grad():
-		z = agent.model.encode(o.to(dev), None)
-		bias = calibration_bias(agent, z, a.to(dev), beta, H)
-		sig, _, roll = rollout_signals(agent, z, a.to(dev), beta, bias=bias)
+		tk = None if task is None else torch.full((o.shape[1],), int(task), device=dev, dtype=torch.long)
+		z = agent.model.encode(o.to(dev), tk)
+		bias = calibration_bias(agent, z, a.to(dev), beta, H, task=tk)
+		sig, _, roll = rollout_signals(agent, z, a.to(dev), beta, bias=bias, task=tk)
 	E = return_error(roll, reward_windows(data, H, episode_ids), float(agent.discount))
 	L = E.shape[0]
 	e1 = E[0].flatten().float()
