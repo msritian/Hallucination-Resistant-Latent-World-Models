@@ -1,33 +1,18 @@
-# 6. Run time, and how we tried to use the detector
+# 6. Run time
 
-## At run time (`src/planning/gpu_audit.py`: the same trees, re-implemented exactly on the GPU)
-
-```python
-# inside MPPI, for any set of candidate plans (512 per iteration)
-p = detect(trees, o_t, candidate_actions)       # p[k, n] for every step k and candidate n
-```
-
-## Uses tested (all pre-registered; same robots and seeds for every arm)
+At run time the detector needs only the trained world model and the trees fitted in `4_learned_audit.md`. No simulator,
+no real future and no rewards are used.
 
 ```python
-# (a) Warning light (src/monitor.py): on the plan about to be executed
-plan = mppi_H12(o_t)
-if max_k p(plan)[k] > threshold(rate):  act with mppi_H3(o_t)  else: act with plan
-# result: accurate on executed plans (AUROC 0.81) but success equals a random warning at the same rate
-
-# (b) Inside the search (src/planning/detector_planner.py)
-score_n = lambda_return(r_hat, v, lam=0.8 * (1 - p[:, n]))                 # audit-weighted trust
-drop the 25% of candidates with the largest max_k p[k, n] before choosing elites
-# result: no gain vs constant lambda; dropping hurt (-0.044), worse than random dropping
-
-# (c) Training (src/training/audit_replay.py): every 50k steps
-score every stored 12-step window by max_k p; keep the top 30%
-each batch = 50% slices from flagged windows + 50% uniform
-# interim (StackCube): no gain; slightly higher imagination error
-
-# (d) Idea 1, running (src/rerank.py): correct plan scores instead of avoiding plans
-top16 = best 16 candidates of MPPI
-over_estimate_n = regression_trees(plan_features(top16[n]))  # learned from real outcomes: imagined - true return
-execute argmax_n (imagined_score_n - over_estimate_n)
-# compared with: imagined score, ensemble penalty (lambda tuned), oracle (true score), random, standard H3
+def detect(trees, bias, o_t, actions):          # actions: any candidate sequence (12 steps)
+    roll = imagine(o_t, actions)                 # 1_world_model_and_rollout.md
+    sig  = signals(roll, bias)                   # 2_signals.md
+    return [trees.predict_proba(features(roll, sig, k)) for k in range(L)]   # p_k = P(imagined step k is hallucinated)
 ```
+
+For many candidates at once (e.g. all 512 MPPI candidates per planning iteration), `src/planning/gpu_audit.py` evaluates
+the same trees exactly on the GPU. Every job checks the GPU copy against sklearn before use (max difference 0.0).
+
+Uses of the detector beyond detection (planning, training, shift monitoring, policy evaluation, per-signal audits) were
+tested separately. Their designs and results are in `docs/preregistration_*.md` and the experiment log, not in this
+pseudocode.
