@@ -41,12 +41,12 @@ def main(paths):
 	L = E.shape[0]
 	print(f"{n} robots with ensembles. Mean true imagination error by step: " + " ".join(f"{x:.2f}" for x in E))
 	print("\nAUROC per imagined step (1 = first imagined transition):")
-	print("signal " + " ".join(f"k{k + 1:>5d}" for k in range(L)) + "   early(1-3) late(9-11) change")
+	print("signal " + " ".join(f"k{k + 1:>5d}" for k in range(L)) + "   first-3  last-3  change")
 	for s in SIG:
 		a = nanmean(per_k[s])
 		e, l = float(a[:3].mean()), float(a[-3:].mean())
 		print(f"{s:6s} " + " ".join(f"{x:6.2f}" for x in a) + f"   {e:.2f}       {l:.2f}     {l - e:+.2f}")
-	print("\nGrowth from early (1-3) to late (9-11) steps, on hallucinated windows: signal ratio vs error ratio")
+	print("\nGrowth from the first 3 to the last 3 imagined steps, on hallucinated windows: signal ratio vs error ratio")
 	er = float(E[-3:].mean() / E[:3].mean())
 	for s in SIG:
 		v = nanmean(rise[s])
