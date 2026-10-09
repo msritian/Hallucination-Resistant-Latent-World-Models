@@ -2,6 +2,7 @@
 # Non-interactive container build (CHTC build node): newer CUDA wheels (cu128, supports the newest GPUs) + dm_control.
 set -e
 # non-interactive jobs have no usable HOME/tmp: keep apptainer cache and temp files in the job sandbox
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export HOME=$PWD APPTAINER_CACHEDIR=$PWD/cache APPTAINER_TMPDIR=$PWD/tmp
 mkdir -p cache tmp
 ls -la; which apptainer
