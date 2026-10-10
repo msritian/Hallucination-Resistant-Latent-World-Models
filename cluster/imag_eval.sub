@@ -2,7 +2,7 @@
 # Usage: condor_submit shift.sub queue_file=shift_smoke.txt (then shift_runs.txt)
 # Output: results/<name>.tar.gz
 universe = container
-container_image = file:///staging/s/smittal39/tdmpc2_v2.sif
+container_image = file:///staging/s/smittal39/tdmpc2_v3.sif
 
 executable = imag_eval.sh
 arguments = $(task) $(grounded) $(episodes) $(cal_episodes) $(extra)
@@ -25,7 +25,7 @@ error = logs/$(name).$(Cluster).$(Process).err
 requirements = (HasCHTCStaging == true)
 request_gpus = 1
 gpus_minimum_capability = 7.0
-gpus_maximum_capability = 9.0
+gpus_maximum_capability = 12.0
 +WantGPULab = true
 +GPUJobLength = "short"
 request_cpus = 4

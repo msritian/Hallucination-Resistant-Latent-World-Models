@@ -2,7 +2,7 @@
 # Usage:  condor_submit eval.sub name=p1_grounded_push_s10 run=grounded task=PushCube-v1 preset=pilot
 # Output: results/eval_<name>_<preset>.tar.gz  (episodes.csv, summary.json, taus.json)
 universe = container
-container_image = file:///staging/s/smittal39/tdmpc2_v2.sif
+container_image = file:///staging/s/smittal39/tdmpc2_v3.sif
 
 executable = eval.sh
 arguments = $(name) $(run) $(task) $(preset) $(extra)
@@ -21,7 +21,7 @@ error = logs/eval_$(name)_$(preset).$(Cluster).err
 requirements = (HasCHTCStaging == true)
 request_gpus = 1
 gpus_minimum_capability = 7.0
-gpus_maximum_capability = 9.0
+gpus_maximum_capability = 12.0
 +WantGPULab = true
 +GPUJobLength = "medium"
 request_cpus = 4

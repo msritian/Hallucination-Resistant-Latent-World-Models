@@ -3,7 +3,7 @@
 #         condor_submit detplan.sub queue_file=detplan_runs.txt    (then: 11 robots, 100 episodes per arm)
 # Output: results/<name>.tar.gz
 universe = container
-container_image = file:///staging/s/smittal39/tdmpc2_v2.sif
+container_image = file:///staging/s/smittal39/tdmpc2_v3.sif
 
 executable = detplan.sh
 arguments = $(task) $(grounded) $(episodes)
@@ -26,7 +26,7 @@ error = logs/$(name).$(Cluster).$(Process).err
 requirements = (HasCHTCStaging == true)
 request_gpus = 1
 gpus_minimum_capability = 7.0
-gpus_maximum_capability = 9.0
+gpus_maximum_capability = 12.0
 +WantGPULab = true
 +GPUJobLength = "short"
 request_cpus = 4

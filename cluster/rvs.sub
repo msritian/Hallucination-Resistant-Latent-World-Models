@@ -1,7 +1,7 @@
 # Model vs simulator rollouts with the same start state and actions. One job per line of rvs_runs.txt.
 # Usage:  condor_submit rvs.sub        Output: results/rvs_<name>.tar.gz (report.md, summary.json, data.pt)
 universe = container
-container_image = file:///staging/s/smittal39/tdmpc2_v2.sif
+container_image = file:///staging/s/smittal39/tdmpc2_v3.sif
 
 executable = rvs.sh
 arguments = $(name) $(run) $(task)
@@ -20,7 +20,7 @@ error = logs/rvs_$(name).$(Cluster).err
 requirements = (HasCHTCStaging == true)
 request_gpus = 1
 gpus_minimum_capability = 7.0
-gpus_maximum_capability = 9.0
+gpus_maximum_capability = 12.0
 +WantGPULab = true
 +GPUJobLength = "short"
 request_cpus = 4

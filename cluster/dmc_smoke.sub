@@ -1,5 +1,5 @@
 universe = container
-container_image = file:///staging/s/smittal39/tdmpc2_v2.sif
+container_image = file:///staging/s/smittal39/tdmpc2_v3.sif
 executable = dmc_smoke.sh
 transfer_input_files = code.tar.gz
 should_transfer_files = YES
@@ -10,7 +10,7 @@ error = logs/dmc_smoke.$(Cluster).err
 requirements = (HasCHTCStaging == true)
 request_gpus = 1
 gpus_minimum_capability = 7.0
-gpus_maximum_capability = 9.0
+gpus_maximum_capability = 12.0
 +WantGPULab = true
 +GPUJobLength = "short"
 request_cpus = 4

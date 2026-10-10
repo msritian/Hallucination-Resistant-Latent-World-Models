@@ -3,7 +3,7 @@
 # Outputs: ~/wm-cluster/results/<name>.tar.gz (checkpoint, CSV logs, videos, final model)
 # Before the first submit:  mkdir -p logs results
 universe = container
-container_image = file:///staging/s/smittal39/tdmpc2_v2.sif
+container_image = file:///staging/s/smittal39/tdmpc2_v3.sif
 
 executable = train.sh
 arguments = --run $(run) --task $(task) --seed $(seed) --steps $(steps) $(extra)
@@ -26,7 +26,7 @@ error = logs/$(name).$(Cluster).$(Process).err
 requirements = (HasCHTCStaging == true)
 request_gpus = 1
 gpus_minimum_capability = 7.0
-gpus_maximum_capability = 9.0
+gpus_maximum_capability = 12.0
 +WantGPULab = true
 +GPUJobLength = "short"
 request_cpus = 4

@@ -1,7 +1,7 @@
 # Re-analyse the simulator-labelled episodes (results/real_<grounded>.tar.gz) with the current code (no new collection).
 # Usage:  condor_submit reanalyze_real.sub queue_file=detect_dev.txt      Output: results/real2_<grounded>.tar.gz
 universe = container
-container_image = file:///staging/s/smittal39/tdmpc2_v2.sif
+container_image = file:///staging/s/smittal39/tdmpc2_v3.sif
 
 executable = reanalyze_real.sh
 arguments = $(task) $(grounded) $(stock)
@@ -20,7 +20,7 @@ error = logs/real2_$(grounded).$(Cluster).err
 requirements = (HasCHTCStaging == true)
 request_gpus = 1
 gpus_minimum_capability = 7.0
-gpus_maximum_capability = 9.0
+gpus_maximum_capability = 12.0
 +WantGPULab = true
 +GPUJobLength = "short"
 request_cpus = 4
