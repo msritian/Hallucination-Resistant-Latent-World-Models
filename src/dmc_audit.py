@@ -57,7 +57,7 @@ def collect(env, agent, task_idx, episodes, seed0):
 
 
 @torch.no_grad()
-def audit_task(agent, view, data, task_idx, stride):
+def audit_task(agent, view, data, task_idx, stride, dump=None):
 	dev = next(agent.model.parameters()).device
 	E = data["obs"].shape[0]
 	cal = strided({k: v[:E // 2] for k, v in data.items()}, stride)
@@ -72,7 +72,7 @@ def audit_task(agent, view, data, task_idx, stride):
 	L = H - 1
 	X = _features({k: v.cpu() for k, v in sig.items()}, roll, CRITIC_FEATURES, L, True)
 	scores = {"LBA": torch.as_tensor(lba["clf"].predict_proba(X.numpy())[:, 1]).view(L, -1).float()}
-	for k in ("B", "E", "A", "Aa"):
+	for k in ("B", "E", "A", "Aa", "Ac"):
 		scores[k] = sig[k][:L].cpu().float()
 	# controls (same trees, labels and calibration data): which inputs carry the result?
 	from src.preflight.run_preflight import make_gbt
@@ -99,6 +99,8 @@ def audit_task(agent, view, data, task_idx, stride):
 		out[name] = {d: (stratified_auroc(s[k], p[k], steps[k]) if p[k].any() and (~p[k]).any() else float("nan"))
 		             for d, s in scores.items()}
 	out["positive_rate"] = float(pos[keep].float().mean())
+	if dump is not None:   # per-step scores and labels for the compounding analysis
+		torch.save(dict(scores=scores, E=Eev, pos=pos, keep=keep), dump)
 	out["return"] = float(data["reward"].sum(1).mean())
 	return out
 
@@ -111,6 +113,8 @@ def main(cfg):
 
 	out = Path(cfg.out); out.mkdir(parents=True, exist_ok=True)
 	episodes, stride, seed0 = int(cfg.get("episodes", 20)), int(cfg.get("stride", 5)), int(cfg.get("seed0", 11000))
+	global H
+	H = int(cfg.get("audit_horizon", 12))
 	subset = str(cfg.get("tasks_subset", "all"))
 	cfg = parse_cfg(cfg)
 	env = make_env(cfg)
@@ -127,7 +131,7 @@ def main(cfg):
 		disc = agent.discount[ti] if cfg.multitask else agent.discount
 		view = SimpleNamespace(model=agent.model, cfg=agent.cfg, discount=float(disc), num_aux_dynamics=0)
 		data = collect(env, agent, ti, episodes, seed0)
-		results[task] = audit_task(agent, view, data, ti, stride)
+		results[task] = audit_task(agent, view, data, ti, stride, dump=out / f"perstep_{task}.pt")
 		r = results[task]["all"]
 		print(f"{task:26s} return {results[task]['return']:7.1f}  pos {results[task]['positive_rate']:.3f}  "
 		      + "  ".join(f"{k} {v:.3f}" for k, v in r.items()), flush=True)

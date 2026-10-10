@@ -1,0 +1,4 @@
+dmcH24_a, task=mt30 model_size=48 checkpoint=/staging/s/smittal39/tdmpc2_pre/ckpt/mt30-48M.pt +episodes=20 +audit_horizon=24 +tasks_subset=walker-walk+walker-run+cheetah-run+hopper-stand+reacher-hard
+dmcH24_b, task=mt30 model_size=48 checkpoint=/staging/s/smittal39/tdmpc2_pre/ckpt/mt30-48M.pt +episodes=20 +audit_horizon=24 +tasks_subset=cartpole-balance+cup-catch+finger-turn-hard+fish-swim+pendulum-swingup
+dmcH40_a, task=mt30 model_size=48 checkpoint=/staging/s/smittal39/tdmpc2_pre/ckpt/mt30-48M.pt +episodes=20 +audit_horizon=40 +tasks_subset=walker-walk+walker-run+cheetah-run+hopper-stand+reacher-hard
+dmcH40_b, task=mt30 model_size=48 checkpoint=/staging/s/smittal39/tdmpc2_pre/ckpt/mt30-48M.pt +episodes=20 +audit_horizon=40 +tasks_subset=cartpole-balance+cup-catch+finger-turn-hard+fish-swim+pendulum-swingup
