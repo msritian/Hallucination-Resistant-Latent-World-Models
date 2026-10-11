@@ -18,3 +18,21 @@ Growth from the first 3 to the last 3 imagined steps, on hallucinated windows: s
   D      signal x0.79   (true error x38.47)
   M      signal x0.35   (true error x38.47)
   B      signal x0.88   (true error x38.47)
+
+Per-robot growth ratio (first 3 -> last 3 steps, hallucinated windows): mean [95% CI over robots]
+  LBA    x14.61 [6.04, 25.72]   grows (>1) on 11/11 robots
+  Aa     x2.73 [1.49, 4.50]   grows (>1) on 8/11 robots
+  Ac     x2.91 [2.00, 4.04]   grows (>1) on 11/11 robots
+  A      x0.51 [0.28, 0.76]   grows (>1) on 1/11 robots
+  D      x0.87 [0.68, 1.06]   grows (>1) on 4/11 robots
+  M      x0.70 [0.29, 1.15]   grows (>1) on 2/11 robots
+  B      x1.31 [0.75, 2.02]   grows (>1) on 4/11 robots
+  Aa grows more than D on 11/11 robots
+  Ac grows more than D on 11/11 robots
+  LBA grows more than D on 11/11 robots
+  Aa grows more than M on 11/11 robots
+  Ac grows more than M on 11/11 robots
+  LBA grows more than M on 11/11 robots
+  Aa grows more than B on 9/11 robots
+  Ac grows more than B on 10/11 robots
+  LBA grows more than B on 11/11 robots

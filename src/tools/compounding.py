@@ -51,6 +51,18 @@ def main(paths):
 	for s in SIG:
 		v = nanmean(rise[s])
 		print(f"  {s:6s} signal x{float(v[-3:].mean() / v[:3].mean()):.2f}   (true error x{er:.2f})")
+	# per-robot statistics: growth ratio per robot, bootstrap 95% CI over robots, and consistency counts
+	ratio = {s: torch.tensor([float(v[-3:].nanmean() / v[:3].nanmean()) for v in rise[s]]) for s in SIG}
+	g = torch.Generator().manual_seed(0)
+	print("\nPer-robot growth ratio (first 3 -> last 3 steps, hallucinated windows): mean [95% CI over robots]")
+	for s in SIG:
+		r = ratio[s]
+		boots = torch.stack([r[torch.randint(len(r), (len(r),), generator=g)].mean() for _ in range(2000)])
+		print(f"  {s:6s} x{float(r.mean()):.2f} [{float(boots.quantile(0.025)):.2f}, {float(boots.quantile(0.975)):.2f}]   "
+		      f"grows (>1) on {int((r > 1).sum())}/{len(r)} robots")
+	for ens in ("D", "M", "B"):
+		for anc in ("Aa", "Ac", "LBA"):
+			print(f"  {anc} grows more than {ens} on {int((ratio[anc] > ratio[ens]).sum())}/{len(ratio[ens])} robots")
 
 
 if __name__ == "__main__":
