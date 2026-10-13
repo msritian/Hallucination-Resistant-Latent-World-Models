@@ -40,6 +40,18 @@ def main(paths):
 	for s in SIG:
 		g, a = m(grow[s]), m(auc[s])
 		print(f"{s:6s}  x{float(g[-3:].mean() / g[:3].mean()):.2f}                 {float(a[:3].mean()):.2f}         {float(a[-3:].mean()):.2f}")
+	# per-task statistics: growth ratio per task, bootstrap 95% CI over tasks, and consistency counts
+	ratio = {s: torch.tensor([float(v[-3:].nanmean() / v[:3].nanmean()) for v in grow[s]]) for s in SIG}
+	ok = ~torch.stack([r.isnan() for r in ratio.values()]).any(0)          # tasks with hallucinated windows early and late
+	g = torch.Generator().manual_seed(0)
+	print(f"\nPer-task growth ratio (first 3 -> last 3 steps, hallucinated windows), {int(ok.sum())} tasks: mean [95% CI]")
+	for s in SIG:
+		r = ratio[s][ok]
+		boots = torch.stack([r[torch.randint(len(r), (len(r),), generator=g)].mean() for _ in range(2000)])
+		print(f"  {s:6s} x{float(r.mean()):.2f} [{float(boots.quantile(0.025)):.2f}, {float(boots.quantile(0.975)):.2f}]   "
+		      f"grows (>1) on {int((r > 1).sum())}/{len(r)} tasks")
+	for anc in ("Aa", "Ac", "LBA"):
+		print(f"  {anc} grows more than B on {int((ratio[anc][ok] > ratio['B'][ok]).sum())}/{int(ok.sum())} tasks")
 
 
 if __name__ == "__main__":
