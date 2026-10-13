@@ -12,13 +12,15 @@ DMC: released TD-MPC2 MT30-48M, all 30 tasks (H=24) and 10 tasks (H=40); only cr
 | ManiSkill, 15 robots | 24 | x18.1 | x0.92 / x1.11 / x1.92 (grow on 5, 4, 9 of 15) | x2.30 / x2.19 (15/15, 15/15) | x5.45 (15/15) |
 | ManiSkill, 15 robots | 40 | x37.5 | x0.89 / x0.76 / x1.40 (grow on 6, 3, 6 of 15) | x2.64 / x2.66 (12/15, 15/15) | x14.0 (15/15) |
 | DMC, 30 tasks | 24 | x36.2 | B x1.30 (18/30) | x12.4 / x9.35 (30/30, 30/30) | x3.25 (28/30) |
+| DMC 317M model, 10 tasks | 24 | x29.6 | B x1.71 (5/10) | x10.2 / x8.04 (10/10, 10/10) | x3.60 (9/10) |
 | DMC, 10 tasks | 40 | x112 | B x1.80 (6/10) | x26.4 / x18.7 (10/10, 10/10) | x7.17 (10/10) |
 
 Per-unit mean growth ratios; counts = robots/tasks where the signal grows at all. Aa, Ac and the learned audit grow more
 than D and M on 15/15 robots at both horizons (Aa vs M 14/15 at H24); more than critic spread B on 30/30 DMC tasks (Aa, Ac).
 Ranking (per-step AUROC) is a separate question: the learned audit is the best detector at every step and horizon
 (ManiSkill ~.81-.84, DMC ~.88-.92); raw anchored checks lose long-range ranking on ManiSkill (Aa .75 -> .65 at H40).
-317M model: pending (first attempt ran out of GPU memory; resubmitted on >= 20 GB GPUs).
+317M model (6.6x larger, same 10 tasks as the 48M H=24 run): same pattern; Aa, Ac grow more than B on 10/10 tasks;
+learned audit AUROC .86 -> .83 vs B .64 -> .55. A bigger model does not fix ensemble miscalibration.
 
 ## Raw output: ManiSkill
 
@@ -142,6 +144,30 @@ Per-task growth ratio (first 3 -> last 3 steps, hallucinated windows), 10 tasks:
   A      x1.52 [0.90, 2.35]   grows (>1) on 6/10 tasks
   B      x1.80 [0.94, 3.12]   grows (>1) on 6/10 tasks
   E      x0.96 [0.93, 0.98]   grows (>1) on 2/10 tasks
+  Aa grows more than B on 10/10 tasks
+  Ac grows more than B on 10/10 tasks
+  LBA grows more than B on 9/10 tasks
+```
+
+## Raw output: DMC 317M (H=24, 10 tasks)
+
+```
+10 tasks. True error growth first-3 -> last-3: x29.60
+signal  growth(on hallucinated)  AUROC first-3  last-3
+LBA     x2.29                 0.86         0.83
+Aa      x7.50                 0.55         0.55
+Ac      x5.84                 0.56         0.49
+A       x0.93                 0.57         0.56
+B       x0.79                 0.64         0.55
+E       x0.99                 0.49         0.45
+
+Per-task growth ratio (first 3 -> last 3 steps, hallucinated windows), 10 tasks: mean [95% CI]
+  LBA    x3.60 [1.96, 6.17]   grows (>1) on 9/10 tasks
+  Aa     x10.16 [7.20, 13.35]   grows (>1) on 10/10 tasks
+  Ac     x8.04 [6.24, 9.76]   grows (>1) on 10/10 tasks
+  A      x1.29 [0.87, 1.79]   grows (>1) on 5/10 tasks
+  B      x1.71 [0.80, 3.17]   grows (>1) on 5/10 tasks
+  E      x1.00 [0.96, 1.07]   grows (>1) on 3/10 tasks
   Aa grows more than B on 10/10 tasks
   Ac grows more than B on 10/10 tasks
   LBA grows more than B on 9/10 tasks
