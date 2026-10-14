@@ -13,10 +13,14 @@ from src.preflight.metrics import auroc
 from src.tools import audit_ablations as aa
 
 SIG = ("LBA", "Aa", "Ac", "A", "D", "M", "B")
+TRAJ = ("Dt", "Mt")   # trajectory-level ensembles (PETS / STEVE-style), in dumps made after 2026-10-13
 
 
 def main(paths):
+	global SIG
 	dumps = {r: d for r, d in aa.load_dumps(paths).items() if r.endswith("/grounded") and "D" in d["ev"]["signals"]}
+	if all(t in d["ev"]["signals"] for d in dumps.values() for t in TRAJ):
+		SIG = SIG + TRAJ
 	per_k = {s: [] for s in SIG}; err_k = []; rise = {s: [] for s in SIG}
 	for r, d in dumps.items():
 		ev = d["ev"]; L = ev["E"].shape[0]
@@ -60,9 +64,29 @@ def main(paths):
 		boots = torch.stack([r[torch.randint(len(r), (len(r),), generator=g)].mean() for _ in range(2000)])
 		print(f"  {s:6s} x{float(r.mean()):.2f} [{float(boots.quantile(0.025)):.2f}, {float(boots.quantile(0.975)):.2f}]   "
 		      f"grows (>1) on {int((r > 1).sum())}/{len(r)} robots")
-	for ens in ("D", "M", "B"):
+	for ens in ("D", "M", "B") + tuple(t for t in TRAJ if t in SIG):
 		for anc in ("Aa", "Ac", "LBA"):
 			print(f"  {anc} grows more than {ens} on {int((ratio[anc] > ratio[ens]).sum())}/{len(ratio[ens])} robots")
+
+	if all("shared_bias" in d["ev"] for d in dumps.values()):
+		shared_bias_report(dumps)
+
+
+def shared_bias_report(dumps):
+	"""Do the ensemble members drift TOGETHER? Error of the ensemble mean vs member spread, steps first-3 vs last-3."""
+	print("\nShared bias (heads rolled out independently from the real start), mean over robots:")
+	print("  quantity                         first-3   last-3   growth")
+	keys = (("lat_mean_err", "latent error of the ensemble mean"), ("lat_spread", "latent spread across heads"),
+	        ("ret_mean_err", "return error of the ensemble mean"), ("ret_spread", "return spread across heads"))
+	per = {k: torch.stack([d["ev"]["shared_bias"][k].float().mean(1) for d in dumps.values()]) for k, _ in keys}
+	for k, name in keys:
+		v = per[k].mean(0)
+		print(f"  {name:32s} {float(v[:3].mean()):8.3f} {float(v[-3:].mean()):8.3f}   x{float(v[-3:].mean() / v[:3].mean()):.2f}")
+	for err, spr, what in (("lat_mean_err", "lat_spread", "latent"), ("ret_mean_err", "ret_spread", "return")):
+		ratio = per[err] / per[spr].clamp_min(1e-8)                                  # [robots, steps]: error per unit of spread
+		early, late = ratio[:, :3].mean(1), ratio[:, -3:].mean(1)
+		print(f"  {what}: error / spread  first-3 {float(early.mean()):.2f} -> last-3 {float(late.mean()):.2f};  "
+		      f"rises on {int((late > early).sum())}/{len(late)} robots;  error > spread at the end on {int((late > 1).sum())}/{len(late)}")
 
 
 if __name__ == "__main__":

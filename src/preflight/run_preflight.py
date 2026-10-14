@@ -20,8 +20,9 @@ from types import SimpleNamespace
 import torch
 
 from src.auditor.injection import goal_interpolation, injector_at, structured_noise, value_neutral_match
-from src.auditor.signals import (audit_rollout, bellman_target_spread, dynamics_disagreement, pi_mean, q_heads,
-                                 training_target_residual)
+from src.auditor.signals import (audit_rollout, bellman_target_spread, dynamics_disagreement, member_returns,
+                                 member_rollouts, pi_mean, q_heads, training_target_residual, trajectory_disagreement)
+from src.auditor.signals import decode
 from src.auditor.calibrator import clean_prefix_mask, error_thresholds
 from src.preflight.analysis import calibrate_all, natural_labels, normalize, replay_scores
 from src.preflight.metrics import bootstrap_auroc, go_no_go
@@ -146,7 +147,36 @@ def plan_signals(agent, z0, actions, beta: float, inject=None, bias=None, ensemb
 		heads = agent.aux_dynamics_heads()
 		sig["D"] = dynamics_disagreement(heads, roll.z, actions).squeeze(-1)
 		sig["M"] = bellman_target_spread(heads, model, cfg, roll, actions).squeeze(-1)
+		# trajectory-level ensembles: every head imagines the whole rollout on its own (PETS / STEVE-style)
+		trajs = member_rollouts(heads, z0, actions)
+		sig["Dt"] = trajectory_disagreement(trajs).squeeze(-1)
+		sig["Mt"] = member_returns(trajs, model, cfg, actions, float(agent.discount), task).std(0).squeeze(-1)
 	return sig, roll
+
+
+@torch.no_grad()
+def shared_bias(agent, z_real, actions, r_true, chunk: int = 1024) -> dict:
+	"""Does the ensemble drift TOGETHER? Per step t and window, with heads rolled out independently from the real start:
+	latent: error of the ensemble mean |mean_m z^m_{t+1} - z_{t+1}|, mean member error, and member spread (std, summed
+	in quadrature over dims); return: error of the ensemble-mean imagined reward sum vs the simulator, and its spread.
+	Shared bias = ensemble-mean error large while spread stays small. Latent [H, M]; return [H-1, M] (as labels E)."""
+	heads, g = agent.aux_dynamics_heads(), float(agent.discount)
+	out = {k: [] for k in ("lat_mean_err", "lat_member_err", "lat_spread", "ret_mean_err", "ret_spread")}
+	H, Mw = actions.shape[0], actions.shape[1]
+	disc = g ** torch.arange(H - 1, device=actions.device, dtype=torch.float32).view(-1, 1)   # aligned with return_error
+	for s in range(0, Mw, chunk):
+		zr, a = z_real[:, s:s + chunk], actions[:, s:s + chunk]
+		tr = member_rollouts(heads, zr[0], a)                                                    # [K, H+1, n, d]
+		zt = tr[:, 1:]
+		out["lat_mean_err"].append((zt.mean(0) - zr[1:]).norm(dim=-1))
+		out["lat_member_err"].append((zt - zr[1:]).norm(dim=-1).mean(0))
+		out["lat_spread"].append(zt.std(0).norm(dim=-1))
+		r = torch.stack([decode(agent.model.reward(z[:-1], a, None), agent.cfg).squeeze(-1) for z in tr])   # [K, H, n]
+		G = torch.cumsum(disc * r[:, 1:], 1)                                  # imagined reward sums, steps 1..H-1 (as labels E)
+		Gt = torch.cumsum(disc * r_true[1:, s:s + chunk].to(G.device), 0)    # simulator reward sums
+		out["ret_mean_err"].append((G.mean(0) - Gt).abs())
+		out["ret_spread"].append(G.std(0))
+	return {k: torch.cat(v, 1).cpu() for k, v in out.items()}
 
 
 def value_fn(agent, z):
@@ -324,8 +354,11 @@ def evaluate_model(agent, data, H: int, beta: float, dump_path=None) -> dict:
 			eps_of = lambda eps: torch.tensor([e for e in eps for _ in range(T - H + 1)])
 			pack = lambda sig, roll: dict(signals={k: v.detach().cpu() for k, v in sig.items()},
 			                              v_hat=roll.v_mean[1:].squeeze(-1).cpu(), r_hat=roll.r_hat.squeeze(-1).cpu())
+			ev_extra = {}
+			if getattr(agent, "num_aux_dynamics", 0) > 0:
+				ev_extra["shared_bias"] = shared_bias(agent, z_real, a.to(dev), reward_windows(data, H, ev_eps).to(dev))
 			torch.save(dict(cal=dict(**pack(sig_cal, roll_cal), E=E_cal, episode=eps_of(cal_eps), start=starts(cal_eps)),
-			                ev=dict(**pack(sig_clean, roll_clean), E=E, episode=eps_of(ev_eps), start=starts(ev_eps)),
+			                ev=dict(**pack(sig_clean, roll_clean), E=E, episode=eps_of(ev_eps), start=starts(ev_eps), **ev_extra),
 			                success=data["success"].cpu(), H=H, discount=g), dump_path)
 		learned = learned_audits({k: v.cpu() for k, v in sig_cal.items()}, roll_cal, E_cal,
 		                         {k: v.cpu() for k, v in sig_clean.items()}, roll_clean, tuple(E.shape))
