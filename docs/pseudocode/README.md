@@ -11,6 +11,7 @@ Notation: `H` = imagined horizon (12), `L = H - 1` = audited steps, `K = 5` crit
 | `4_learned_audit.md` | the 31 features and the gradient-boosted trees: fit once, then predict |
 | `5_evaluation.md` | per-robot protocol, step-stratified AUROC, bootstrap, sudden vs gradual |
 | `6_runtime_and_uses.md` | using the detector at run time |
+| `pseudocode.tex` | all of the above as one LaTeX document (formulas, algorithm boxes, plain-language explanations), plus the October extensions: compounding analysis, trajectory ensembles, theory, value expansion. Upload to Overleaf and compile with pdfLaTeX. |
 
 End-to-end, for one trained robot:
 
