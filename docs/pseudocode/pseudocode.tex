@@ -51,10 +51,10 @@ $\beta=1$.
 \State $\mathcal{D}\gets$ 50 real episodes recorded with the agent's own planner \Comment{observations, actions, real rewards}
 \State $\mathcal{C},\mathcal{T}\gets$ first 25 episodes (calibration), last 25 (test)
 \State $b\gets\textsc{CriticBias}(\theta,\mathcal{C})$ \Comment{Sec.~\ref{sec:bias}}
-\State $(X_{\mathcal C},\text{rollouts})\gets\textsc{AuditFeatures}(\theta,\mathcal{C},b)$ \Comment{Secs.~\ref{sec:signals},\ref{sec:features}}
+\State $(X_{\mathcal C},\text{rollouts})\gets\textsc{AuditFeatures}(\theta,\mathcal{C},b)$ \Comment{$\Delta$: Alg.~\ref{alg:bellman}}
 \State $(y_{\mathcal C},\varepsilon_{\text{hall}},\varepsilon_{\text{clean}})\gets\textsc{AnswerKey}(\text{rollouts},\mathcal{C})$ \Comment{Sec.~\ref{sec:labels}}
 \State $f\gets\textsc{FitTrees}(X_{\mathcal C},y_{\mathcal C})$ \Comment{Sec.~\ref{sec:trees}}
-\State $(X_{\mathcal T},\text{rollouts})\gets\textsc{AuditFeatures}(\theta,\mathcal{T},b)$
+\State $(X_{\mathcal T},\text{rollouts})\gets\textsc{AuditFeatures}(\theta,\mathcal{T},b)$ \Comment{same $\Delta$ signals on the test half}
 \State $y_{\mathcal T}\gets\textsc{AnswerKey}(\text{rollouts},\mathcal{T};\ \varepsilon_{\text{hall}},\varepsilon_{\text{clean}})$ \Comment{thresholds from calibration only}
 \State $p_{\mathcal T}\gets f(X_{\mathcal T})$ \Comment{hallucination probability per imagined step}
 \State \Return $\textsc{StratifiedAUROC}(p_{\mathcal T},y_{\mathcal T})$ \Comment{Sec.~\ref{sec:eval}; ours $\approx0.82$}
@@ -193,6 +193,83 @@ steps, A still sees $\approx0.3$ per step, but Aa compares the whole imagined re
 roughly $0.3\cdot(1+\gamma+\dots+\gamma^{9})\approx2.4$: the drift has become visible.
 \end{example}
 
+\subsection{Where $\Delta$ is computed: \textsc{BellmanSignals}}\label{sec:bellmansignals}
+
+This is the core of the method. \textsc{Imagine} (Algorithm~\ref{alg:imagine}) only produces the ingredients
+$\hat r_k$, $q_k$, $v_k$ (and the per-head $q^{(i)}_k$, $v^{(i)}_k$). \textsc{BellmanSignals} combines them into the
+residual $\Delta_k$ and its 14 readings. Every later step (bias, features, trees, alarm) uses its output.
+In the code: $\Delta$ at \code{src/auditor/signals.py:151} (unsigned) and \code{Rollout.signed\_residual} (signed);
+Aa in \code{anchored\_residual}; Ac in \code{cumulative\_signed\_residual}; all 14 collected in
+\code{run\_preflight.py::plan\_signals}.
+
+\begin{algorithm}[h]
+\caption{\textsc{BellmanSignals}(rollout, $b$) \quad --- the Bellman residual and its 14 readings}\label{alg:bellman}
+\begin{algorithmic}[1]
+\Require rollout $(\hat r,q,q^{(\cdot)},v,v^{(\cdot)})$ from \textsc{Imagine}; optional critic bias $b$ (\textsc{CriticBias})
+\For{$k=0$ to $H-1$}
+  \State $\boldsymbol{\Delta_k\gets\hat r_k+\gamma\,v_{k+1}-q_k}$ \Comment{\textbf{the core check}}
+  \State $\text{A}_k\gets|\Delta_k|$;\quad $\text{Ao}_k\gets\max(0,\Delta_k)$ \Comment{sudden errors}
+  \State $\text{Ac}_k\gets\bigl|\sum_{j\le k}\gamma^j\Delta_j\bigr|$ \Comment{drift adds up}
+  \State $\text{Aa}_k\gets\bigl|q_0-\bigl(\sum_{j\le k}\gamma^j\hat r_j+\gamma^{k+1}v_{k+1}\bigr)\bigr|$ \Comment{vs the \emph{real} start}
+  \State $\text{A}n_k$, $n\in\{2,3,5,8\}$: the same check over the last $n$ steps
+  \State $\text{P}_k\gets\sd_i\bigl(\hat r_k+\gamma v^{(i)}_{k+1}-q^{(i)}_k\bigr)$ \Comment{per critic head}
+  \State $\text{At}_k\gets\bigl|q_k-(\hat r_k+\gamma\,\overline{\min}_{i<j}(v^{(i)}_{k+1,\text{tgt}},v^{(j)}_{k+1,\text{tgt}}))\bigr|$ \Comment{vs training target}
+  \State $\text{B}_k\gets\sd_i v^{(i)}_{k+1}$;\quad $\text{E}_k\gets v_{k+1}+\beta\,\text{B}_k$ \Comment{not residuals}
+  \If{$b$ is given}
+    \State $\text{Ab}_k\gets|\Delta_k-b_k|$;\quad $\text{Acb}_k\gets\bigl|\sum_{j\le k}\gamma^j(\Delta_j-b_j)\bigr|$ \Comment{bias removed}
+  \EndIf
+\EndFor
+\State \Return the 14 signals per step \Comment{12 of them are built from $\Delta$; B and E are critic-only}
+\end{algorithmic}
+\end{algorithm}
+
+\begin{inwords}
+Algorithm~\ref{alg:imagine} is the daydream; Algorithm~\ref{alg:bellman} is the lie detector reading it. Line 2 is the
+one idea everything rests on: \emph{value now} should equal \emph{reward now plus discounted value next}. The other lines
+read that same mismatch in different ways: one step at a time (A), summed along the rollout (Ac), measured back to the
+real starting point (Aa), over a few steps (A2--A8), per critic head (P), or after removing the critic's normal offset
+(Ab, Acb).
+\end{inwords}
+
+\subsection{Where $\Delta$ comes into the picture, and where it is used}\label{sec:deltamap}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{@{}c@{}}
+\fbox{\textsc{Imagine} (Alg.~\ref{alg:imagine}):\ \ real $o_t$ $\to$ imagined $\hat z_1..\hat z_H$ with $\hat r_k,\ q_k,\ v_k$}\\[2pt]
+$\big\downarrow$ \small ingredients\\[2pt]
+\fbox{\textbf{\textsc{BellmanSignals} (Alg.~\ref{alg:bellman}):\ \ $\Delta_k=\hat r_k+\gamma v_{k+1}-q_k$\ \ $\to$ 14 signals}}\\[2pt]
+$\big\downarrow$\\[2pt]
+\fbox{features: each signal now and its maximum so far, plus $v_{k+1},\hat r_k,k$ \ (31 numbers)}\\[2pt]
+$\big\downarrow$\\[2pt]
+\fbox{trees $f$ (fitted once in \textsc{FitTrees})}\ \ $\to$\ \ \fbox{alarm $p_k$ per imagined step (\textsc{Detect})}
+\end{tabular}
+\end{center}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{}p{3.4cm}p{8.2cm}l@{}}
+\toprule
+Stage & What happens to $\Delta$ & Algorithm\\
+\midrule
+Computed & from the rollout's own predictions only (no simulator, no real future) & \ref{alg:bellman}\\
+Critic bias & median of $\Delta_k$ on verifiably clean calibration steps gives $b_k$ & \ref{alg:bias}\\
+Features & the 14 signals (12 built from $\Delta$) become 31 numbers per step & \ref{alg:fit}, \ref{alg:detect}\\
+Trees learn & which patterns of $\Delta$ (size, growth, where in the rollout) mean hallucination & \ref{alg:fit}\\
+Alarm & frozen trees turn the signals into $p_k$ at run time & \ref{alg:detect}\\
+\textbf{Labels} & \textbf{$\Delta$ is never used}: hallucinations are labelled from real rewards only, so the
+detector is never graded by its own ingredients & \ref{alg:labels}\\
+Long rollouts & growth of Aa, Ac and the learned audit vs ensembles (Appendix) & ---\\
+Training & the audit's alarm sets trust in value expansion (Appendix) & ---\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{What is and is not new.} The Bellman residual itself is the classic temporal-difference error that every
+value-based RL method trains on. What is new is its use as a \emph{run-time hallucination check on imagined latent
+rollouts}: computed with no simulator, anchored at the one real point of the rollout (Aa), judged by a critic
+grounded in real data, and read by a learned audit.
+
 \subsection{Critic bias (\code{run\_preflight.py::calibration\_bias})}\label{sec:bias}
 
 Even on correct steps, the mean critic sits slightly below $\hat r+\gamma v$, because TD-MPC2 trains toward a
@@ -202,12 +279,12 @@ Even on correct steps, the mean critic sits slightly below $\hat r+\gamma v$, be
 \caption{\textsc{CriticBias}$(\theta,\mathcal C)$}\label{alg:bias}
 \begin{algorithmic}[1]
 \For{every length-$H$ window $w$ in the calibration episodes} \Comment{real start, real actions, real next observations}
-  \State rollout $\gets\textsc{Imagine}(o^w_0,\mathbf a^w)$
+  \State rollout $\gets\textsc{Imagine}(o^w_0,\mathbf a^w)$;\quad $\Delta^w\gets\textsc{BellmanSignals}(\text{rollout})$ \Comment{no bias yet}
   \State $e^w_k\gets\bigl\|\hat z_{k+1}-h_\theta(o^w_{k+1})\bigr\|$ for $k=0..H-1$ \Comment{latent error}
 \EndFor
 \State $\tau\gets P_{90}\bigl(\{e^w_0\}_w\bigr)$
 \State clean$^w_k\gets\bigl[e^w_j\le\tau\ \ \forall j\le k\bigr]$ \Comment{clean prefix}
-\State \Return $b_k=\med\{\Delta^w_k:\ \text{clean}^w_k\}$ for $k=0..H-1$
+\State \Return $b_k=\med\{\Delta^w_k:\ \text{clean}^w_k\}$ for $k=0..H-1$ \Comment{the critic's normal $\Delta$ offset}
 \end{algorithmic}
 \end{algorithm}
 
@@ -306,7 +383,8 @@ predicted reward and the step index.
 \begin{algorithmic}[1]
 \State $X,y\gets[\ ],[\ ]$
 \For{every length-$H$ window $w$ of the 25 calibration episodes}
-  \State rollout $\gets\textsc{Imagine}(o^w_0,\mathbf a^w)$;\ signals with bias $b$;\ $E^w\gets$ imagination error
+  \State rollout $\gets\textsc{Imagine}(o^w_0,\mathbf a^w)$;\quad signals $\gets\textsc{BellmanSignals}(\text{rollout},b)$ \Comment{$\Delta$ here}
+  \State $E^w\gets$ imagination error from real rewards (\textsc{AnswerKey}) \Comment{labels never use $\Delta$}
   \For{$k=0$ to $L-1$}
     \If{$y^w_k$ is not excluded} \State append $x^w_k$ to $X$ and $y^w_k$ to $y$ \EndIf
   \EndFor
@@ -323,7 +401,7 @@ $p_k=\Pr(y_k=1\mid x_k)$.
 \begin{algorithm}[h]
 \caption{\textsc{Detect}$(f,b,o_t,\mathbf a)$}\label{alg:detect}
 \begin{algorithmic}[1]
-\State rollout $\gets\textsc{Imagine}(o_t,\mathbf a)$;\ compute the 14 signals with bias $b$
+\State rollout $\gets\textsc{Imagine}(o_t,\mathbf a)$;\quad signals $\gets\textsc{BellmanSignals}(\text{rollout},b)$ \Comment{$\Delta$ here}
 \State \Return $p_k=f(x_k)$ for $k=0..L-1$ \Comment{probability that imagined step $k$ is hallucinated}
 \end{algorithmic}
 \end{algorithm}
