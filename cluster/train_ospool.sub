@@ -1,5 +1,6 @@
 # Training jobs, one per line of the queue file (name run task seed steps [extra args]).
-# Same as train.sub but can also use backfill / OSPool GPUs (container via OSDF; the staging mirror is skipped there).
+# Same as train.sub but can also use CHTC backfill GPUs (container via OSDF; the staging mirror is skipped there).
+# Not OSPool glideins: they count 10-17 GB for a job that uses ~2.7 GB on CHTC, so jobs were held for memory.
 # Usage:  condor_submit train_ospool.sub queue_file=runs_phase1.txt
 # Outputs: ~/wm-cluster/results/<name>.tar.gz (checkpoint, CSV logs, videos, final model)
 # Before the first submit:  mkdir -p logs results
@@ -25,8 +26,8 @@ output = logs/$(name).$(Cluster).$(Process).out
 error = logs/$(name).$(Cluster).$(Process).err
 
 requirements = True
-+WantFlocking = true
-+WantGlidein = true
++WantFlocking = false
++WantGlidein = false
 request_gpus = 1
 gpus_minimum_capability = 7.0
 gpus_maximum_capability = 12.0
