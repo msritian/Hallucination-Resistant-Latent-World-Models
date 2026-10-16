@@ -67,6 +67,14 @@ def main(paths):
 	for ens in ("D", "M", "B") + tuple(t for t in TRAJ if t in SIG):
 		for anc in ("Aa", "Ac", "LBA"):
 			print(f"  {anc} grows more than {ens} on {int((ratio[anc] > ratio[ens]).sum())}/{len(ratio[ens])} robots")
+	# ranking at the far end, robot by robot: mean per-step AUROC over the last 3 steps, LBA minus each ensemble
+	late = {s: torch.stack([a[-3:].nanmean() for a in per_k[s]]) for s in SIG}
+	print("\nLate-step ranking (mean AUROC over the last 3 steps), LBA vs each ensemble: mean difference [95% CI over robots]")
+	for ens in ("D", "M", "B") + tuple(t for t in TRAJ if t in SIG):
+		d = late["LBA"] - late[ens]
+		boots = torch.stack([d[torch.randint(len(d), (len(d),), generator=g)].mean() for _ in range(2000)])
+		print(f"  LBA - {ens:3s} {float(d.mean()):+.3f} [{float(boots.quantile(0.025)):+.3f}, {float(boots.quantile(0.975)):+.3f}]   "
+		      f"LBA higher on {int((d > 0).sum())}/{len(d)} robots")
 
 	if all("shared_bias" in d["ev"] for d in dumps.values()):
 		shared_bias_report(dumps)
