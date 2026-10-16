@@ -49,14 +49,14 @@ It cannot distinguish an accurate ensemble from one whose members are all wrong 
 the same data with the same architecture and the same encoder tend to extrapolate the same way, so as rollouts lengthen
 the shared term can grow while the spread does not.
 
-## Testable prediction (running: cluster/features_traj.sub, `shared_bias` in the dumps)
+## Testable prediction and result (docs/results_trajectory_ensembles.md)
 
-On the 15 ManiSkill robots, with heads rolled out independently from the real start:
-- the error of the ensemble mean (‖ē_t‖, and its return-level analogue) grows strongly with t;
-- the spread across heads grows much less, so error / spread rises with t;
-- trajectory-level ensembles (Dt: PETS-style latent spread; Mt: STEVE-style spread of the heads' own returns) therefore
-  under-react to compounding error, like the one-step versions D and M. Aa, Ac and the learned audit do not, by
-  Proposition 1.
+Prediction: with heads rolled out independently from the real start, the error of the ensemble mean grows faster than
+the spread, so error / spread rises with depth and trajectory ensembles (Dt, Mt) under-react like D and M.
 
-If instead Dt or Mt do grow with the error, the claim narrows to one-step ensemble alarms (MOPO / MOBILE / MACURA-style)
-and is reported that way.
+Result on 15 ManiSkill robots at 24 and 40 imagined steps: **not observed.** Spread grows faster than the shared error
+(latent ×8.2 vs ×4.9, return ×80 vs ×35 at 40 steps); error / spread falls on 15/15 robots. Dt and Mt do grow with the
+error (×6.6 and ×5.0). So Proposition 2 describes a possible failure, not the observed one, and the "ensembles go
+blind" claim is restricted to one-step ensemble alarms (MOPO / MOBILE / MACURA-style), which stay flat. Proposition 1
+still holds; the learned audit that builds on it ranks best at long range on average (significant at 24 steps,
+12/15 and 11/15 robots vs Dt and Mt at 40).

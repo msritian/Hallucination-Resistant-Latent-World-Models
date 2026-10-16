@@ -538,8 +538,10 @@ For $K$ members with errors $e^{(m)}$ and mean $\bar e$:
 $\ \frac1K\sum_m\|e^{(m)}\|^2=\|\bar e\|^2+\frac1K\sum_m\|e^{(m)}-\bar e\|^2$.
 Any alarm that depends only on disagreement is unchanged if all members shift by the same offset.
 \end{proposition}
-\noindent Whether shared error dominates in practice is measured by the shared-bias diagnostic above (result
-pending at the time of writing).
+\noindent Whether shared error dominates in practice is measured by the shared-bias diagnostic above. On 15 robots at
+24 and 40 imagined steps it does not: the spread grows faster than the error of the ensemble mean (error/spread falls
+on 15/15 robots), and Dt and Mt grow with the error. So the proposition describes a possible failure, not the
+observed one; only one-step ensemble alarms (D, M) stay flat.
 
 \subsection{Hallucination-aware value expansion (\code{src/training/value\_expansion.py})}
 
