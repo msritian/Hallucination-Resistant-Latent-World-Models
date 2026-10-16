@@ -6,17 +6,18 @@ Value expansion (MVE) imagines j steps with the policy from z' and uses
 Hallucination-aware mixing: imagined step k is trusted with probability t_k; the target is the expected return when
 imagination is cut at the first untrusted step:
 	G = sum_{j<h} T_j (1 - t_j) Gj + T_h Gh,   T_j = prod_{k<j} t_k.
-Modes: none (G0), fixed (t = 1 -> Gh), const (t = 0.5), lba (t from the Bellman audit), D (t from ensemble
-disagreement). For lba and D the raw score goes through the same per-step empirical-CDF mapping, t = 1 - CDF(score),
-so both have the same average trust and differ only in WHERE they trust.
+Modes: none (G0), fixed (t = 1 -> Gh), const (t = 0.5), lba (t from the Bellman audit), D (t from one-step ensemble
+disagreement), Mt (STEVE-style: t from the spread of the dynamics heads' own imagined returns, each head rolled out on
+its own; added 2026-10-16). For lba, D and Mt the raw score goes through the same per-step empirical-CDF mapping,
+t = 1 - CDF(score), so they have the same average trust and differ only in WHERE they trust.
 """
 import torch
 
-from src.auditor.signals import decode
+from src.auditor.signals import decode, member_returns, member_rollouts
 from src.planning.gpu_audit import GPUTrees, gpu_features
 from src.preflight.run_preflight import fit_lba, plan_signals
 
-MODES = ("none", "fixed", "const", "lba", "D")
+MODES = ("none", "fixed", "const", "lba", "D", "Mt")
 
 
 def mix(G: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
@@ -55,6 +56,9 @@ class ValueExpansion:
 			X = gpu_features(sig, roll, L)
 			p = self.trees.predict_proba(X.reshape(-1, X.shape[-1])).view(L, -1)
 			return torch.cat([p, p[-1:]], 0)                                     # last step: reuse the last audited one
+		if self.mode == "Mt":
+			trajs = member_rollouts(agent.aux_dynamics_heads(), z, actions)
+			return member_returns(trajs, agent.model, agent.cfg, actions, float(agent.discount)).std(0).squeeze(-1).float()
 		sig, _ = plan_signals(agent, z, actions, 1.0, ensemble=True)
 		return sig["D"].float()
 

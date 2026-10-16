@@ -21,3 +21,14 @@ Statistics: paired by seed, mean difference with a 95% bootstrap CI over seeds (
 - Final success for every comparison is reported as a secondary metric.
 All arms, curves and failed criteria are reported regardless. A smoke test (PickCube lba h=10, StackCube D h=10, 8k steps)
 must finish with final_eval.json before the full study is submitted.
+
+## Addendum (2026-10-16, before any result of the new arm): STEVE-style arm
+
+Reason: docs/results_compounding_final.md and the trajectory-ensemble study (2026-10-16) show that the spread of the
+dynamics heads' own imagined returns (Mt, STEVE-style) grows with compounding error, unlike the one-step disagreement
+used by arm D. A fair comparison needs this stronger ensemble. New arm Mt: same per-step empirical-CDF trust mapping as
+D and lba (same average trust), score = std over heads of each head's own imagined return (heads rolled out
+independently). 10 runs: StackCube h=5 and PickCube h=5, seeds 80-84, all other settings identical.
+- P5: lba vs Mt, learning speed, A+B pooled (10 seed pairs): 95% CI lower bound > 0.
+Final success reported as secondary. The Mt runs use a separate code bundle (code_vemt/) so the 55 running runs keep
+their original code; the only behavioural difference is the trust source.

@@ -62,7 +62,7 @@ def parse_args(argv=None):
 	p.add_argument("--replay_refresh", type=int, default=50_000, help="re-score the replay buffer every N steps")
 	p.add_argument("--replay_frac", type=float, default=0.5, help="fraction of each batch from the flagged windows")
 	p.add_argument("--replay_top", type=float, default=0.3, help="fraction of windows kept as flagged")
-	p.add_argument("--value_expansion", choices=["none", "fixed", "const", "lba", "D"], default="none",
+	p.add_argument("--value_expansion", choices=["none", "fixed", "const", "lba", "D", "Mt"], default="none",
 	               help="hallucination-aware value expansion of the critic's targets (src/training/value_expansion.py)")
 	p.add_argument("--ve_h", type=int, default=5, help="imagined steps of the value expansion")
 	p.add_argument("--ve_start", type=int, default=50_000, help="environment step at which value expansion starts")
