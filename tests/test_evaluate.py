@@ -40,7 +40,7 @@ def test_calibrate_and_evaluate_end_to_end(tmp_path):
 	data = dict(obs=torch.randn(E, T + 1, 6, generator=g), action=torch.rand(E, T, 3, generator=g) * 2 - 1,
 	            success=torch.zeros(E, T))
 	taus = calibrate_taus(agent, data, max_h=24, beta=1.0)
-	assert set(taus[95]) == {"A", "B", "E", "D", "M", "Ao", "P", "At", "Aa", "Ac", "A2", "A3", "A5", "A8"} and len(taus[95]["A"]) == 24
+	assert set(taus[95]) == {"A", "B", "E", "D", "M", "Dt", "Mt", "Ao", "P", "At", "Aa", "Ac", "A2", "A3", "A5", "A8"} and len(taus[95]["A"]) == 24
 	arms = ["stock", PlannerConfig(horizon=3, score="standard"), PlannerConfig(horizon=12, score="trust", signal="C"),
 	        PlannerConfig(horizon=24, score="trust", signal="M", tau_pct=99), PlannerConfig(horizon=6, score="elvis")]
 	summary = evaluate_arms(agent, MockEnv(), arms, taus, episodes=2, seed_start=1000, out=tmp_path)

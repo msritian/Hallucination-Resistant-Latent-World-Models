@@ -189,3 +189,38 @@ def bellman_target_spread(
 			v_k = q_heads(model, z_k, pi_mean(model, z_k, task), cfg, task).mean(0)
 			targets.append(rollout.r_hat + rollout.discount * v_k)
 		return torch.stack(targets).std(0)
+
+
+def member_rollouts(heads: Sequence[Callable], z0: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+	"""Each dynamics head imagines the whole rollout on its own (PETS trajectory sampling): [M, H+1, N, d]."""
+	with torch.no_grad():
+		trajs = []
+		for h in heads:
+			zs = [z0]
+			for t in range(actions.shape[0]):
+				zs.append(h(zs[-1], actions[t]))
+			trajs.append(torch.stack(zs))
+		return torch.stack(trajs)
+
+
+def trajectory_disagreement(trajs: torch.Tensor) -> torch.Tensor:
+	"""Signal Dt (PETS-style): mean over latent dims of the std across independently rolled-out heads at z_{t+1}: [H, N, 1]."""
+	return trajs.std(0).mean(-1, keepdim=True)[1:]
+
+
+def member_returns(trajs: torch.Tensor, model, cfg, actions: torch.Tensor, discount: float, task=None) -> torch.Tensor:
+	"""Each head's own imagined return to step t: sum_{j<=t} gamma^j r_hat_j + gamma^{t+1} V(z_{t+1}): [M, H, N, 1]."""
+	with torch.no_grad():
+		H = actions.shape[0]
+		disc = discount ** torch.arange(H + 1, device=trajs.device, dtype=trajs.dtype).view(-1, 1, 1)
+		out = []
+		for z in trajs:
+			r = decode(model.reward(z[:-1], actions, task), cfg)                                      # [H, N, 1]
+			v = q_heads(model, z[1:], pi_mean(model, z[1:], task), cfg, task).mean(0)               # [H, N, 1]
+			out.append(torch.cumsum(disc[:-1] * r, 0) + disc[1:] * v)
+		return torch.stack(out)
+
+
+def trajectory_return_spread(trajs: torch.Tensor, model, cfg, actions: torch.Tensor, discount: float, task=None) -> torch.Tensor:
+	"""Signal Mt (STEVE-style): std across heads of their own imagined returns: [H, N, 1]."""
+	return member_returns(trajs, model, cfg, actions, discount, task).std(0)

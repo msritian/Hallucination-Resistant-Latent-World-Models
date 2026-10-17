@@ -13,6 +13,7 @@ os.environ.setdefault("LAZY_LEGACY_OP", "0")
 os.environ.setdefault("TORCHDYNAMO_INLINE_INBUILT_NN_MODULES", "1")
 
 import argparse
+import json
 import random
 import sys
 import time
@@ -55,9 +56,23 @@ def parse_args(argv=None):
 	p.add_argument("--model_size", type=int, default=5)
 	p.add_argument("--eval_freq", type=int, default=25_000)
 	p.add_argument("--eval_episodes", type=int, default=10)
+	p.add_argument("--final_eval_episodes", type=int, default=None, help="episodes for the final evaluation (default: eval_episodes)")
+	p.add_argument("--replay", choices=["uniform", "lba", "D"], default="uniform",
+	               help="detector-guided replay (src/training/audit_replay.py): train more on windows flagged by the audit (lba) or by ensemble disagreement (D)")
+	p.add_argument("--replay_refresh", type=int, default=50_000, help="re-score the replay buffer every N steps")
+	p.add_argument("--replay_frac", type=float, default=0.5, help="fraction of each batch from the flagged windows")
+	p.add_argument("--replay_top", type=float, default=0.3, help="fraction of windows kept as flagged")
+	p.add_argument("--value_expansion", choices=["none", "fixed", "const", "lba", "D", "Mt"], default="none",
+	               help="hallucination-aware value expansion of the critic's targets (src/training/value_expansion.py)")
+	p.add_argument("--ve_h", type=int, default=5, help="imagined steps of the value expansion")
+	p.add_argument("--ve_start", type=int, default=50_000, help="environment step at which value expansion starts")
+	p.add_argument("--offline_data", default=None,
+	               help="offline mode: a checkpoint.pt whose stored episodes form a FIXED dataset; no environment interaction")
+	p.add_argument("--offline_episodes", type=int, default=2000, help="offline mode: use the FIRST N stored episodes")
 	p.add_argument("--eval_seed_start", type=int, default=1000)
 	p.add_argument("--video_freq", type=int, default=100_000, help="save an eval video at least this often (and at the end)")
 	p.add_argument("--ckpt_freq", type=int, default=25_000)
+	p.add_argument("--snapshots", default="", help="comma-separated steps at which to keep a copy of the model (snap_<step>.pt)")
 	p.add_argument("--max_hours", type=float, default=10.0, help="checkpoint and exit 85 after this much wall time")
 	p.add_argument("--stop_after_steps", type=int, default=None, help="debug: checkpoint and exit 85 at this step")
 	p.add_argument("--no_compile", action="store_true")
@@ -86,7 +101,14 @@ def mirror_dir(args):
 	if args.mirror_dir != "auto":
 		return Path(args.mirror_dir)
 	base = mirror.staging_base()
-	return None if base is None else base / "runs" / f"{args.run}_{args.task}_s{args.seed}_{args.steps}"
+	# Every setting that changes training must be in the name, or runs that differ only in it share (and resume
+	# from) one mirror: a 2026-10 bug mixed the uniform / lba / D replay arms this way.
+	variant = "" if getattr(args, "replay", "uniform") == "uniform" else f"_replay-{args.replay}-f{args.replay_frac}-t{args.replay_top}"
+	if getattr(args, "value_expansion", "none") != "none":
+		variant += f"_ve-{args.value_expansion}-h{args.ve_h}-s{args.ve_start}"
+	if getattr(args, "offline_data", None):
+		variant += f"_offline-{Path(args.offline_data).parent.parent.name}-n{args.offline_episodes}"
+	return None if base is None else base / "runs" / f"{args.run}_{args.task}_s{args.seed}_{args.steps}{variant}"
 
 
 def build_cfg(args, env: ManiSkill3Env):
@@ -167,6 +189,12 @@ class Trainer:
 		torch.set_float32_matmul_precision("high")
 
 		self.agent = GroundedTDMPC2(self.cfg)
+		if args.offline_data:
+			# TD-MPC2 sizes the buffer as min(buffer_size, steps); with --steps counting updates it can be smaller than
+			# the fixed dataset, and overfilling scrambles episodes (NaN entries -> CUDA assert). Fit the whole dataset.
+			need = args.offline_episodes * (self.env.max_episode_steps + 1)
+			self.cfg.steps = max(int(self.cfg.steps), need)
+			self.cfg.buffer_size = max(int(self.cfg.buffer_size), need)
 		self.buffer = Buffer(self.cfg)
 		self.train_log = CSVLog(self.out / "train.csv")
 		self.eval_log = CSVLog(self.out / "eval.csv")
@@ -175,8 +203,30 @@ class Trainer:
 		self.next_eval, self.next_ckpt, self.next_video = 0, args.ckpt_freq, 0
 		self.episodes = []
 		self._tds = None
+		self.sampler = None
+		if args.replay != "uniform":
+			from src.training.audit_replay import AuditReplay
+			self.sampler = AuditReplay(self.buffer, args.replay, frac=args.replay_frac, top=args.replay_top, seed=args.seed)
+		self.next_refresh = 0   # also refreshed right after a resume (scores are not checkpointed)
+		self.ve = None
+		if args.value_expansion != "none":
+			from src.training.value_expansion import ValueExpansion
+			self.ve = ValueExpansion(args.value_expansion, h=args.ve_h, start_step=args.ve_start, seed=args.seed)
+			self.agent.value_expansion = self.ve
+		self.next_ve_refresh = args.ve_start
 		if resume:
 			self._restore(resume)
+		elif args.offline_data:
+			src = torch.load(args.offline_data, map_location="cpu", weights_only=False)["episodes"]
+			eps = TensorDict(src, batch_size=src["reward"].shape[:2])[:args.offline_episodes]
+			self.episodes = list(eps.unbind(0))
+			self.buffer.load(eps.clone())
+			n = eps.shape[0] * (eps.shape[1] - 1)
+			print(f"Offline dataset: first {eps.shape[0]:,} episodes ({n:,} transitions) of {args.offline_data}; "
+			      f"mean return {float(eps['reward'][:, 1:].sum(1).mean()):.2f} per episode", flush=True)
+		if args.offline_data:   # the fixed dataset, as real episodes for the detector's calibration
+			from src.training.audit_replay import episodes_to_data
+			torch.save(episodes_to_data(self.episodes), self.out / "offline_episodes.pt")
 
 	# ---------------------------------------------------------------- checkpointing
 	def _restore(self, ck):
@@ -232,31 +282,74 @@ class Trainer:
 		self._push_mirror()
 		print(f"Checkpoint saved at step {self.step:,}")
 
+	def _save_snapshots(self):
+		"""Keep a copy of the model at each requested step (training-maturity study); survives restarts via ./run."""
+		for s_ in (int(x) for x in self.args.snapshots.split(",") if x.strip()):
+			path = self.out / f"snap_{s_}.pt"
+			if self.step >= s_ and not path.exists():
+				torch.save(self.agent.checkpoint_state()["model"], path)
+				print(f"Snapshot saved at step {self.step:,} (requested {s_:,})", flush=True)
+
 	def elapsed(self):
 		return self.elapsed_before + time.time() - self.job_start
 
 	# ---------------------------------------------------------------- evaluation
-	def evaluate(self, record_video: bool):
+	def evaluate(self, record_video: bool, episodes=None, keep=None):
+		"""``keep``: list that receives each episode's (obs, action, reward) for later analysis."""
 		rewards, successes = [], []
-		for i in range(self.args.eval_episodes):
+		for i in range(episodes or self.args.eval_episodes):
 			obs, done, ep_reward, t = self.eval_env.reset(seed=self.args.eval_seed_start + i), False, 0.0, 0
+			traj = dict(obs=[obs], action=[torch.full_like(self.eval_env.rand_act(), float("nan"))], reward=[torch.tensor(float("nan"))])
 			frames = [self.eval_env.render()] if (record_video and i == 0) else None
 			while not done:
 				torch.compiler.cudagraph_mark_step_begin()
 				action = self.agent.act(obs, t0=t == 0, eval_mode=True)
 				obs, reward, done, info = self.eval_env.step(action)
+				traj["obs"].append(obs)
+				traj["action"].append(action.cpu())
+				traj["reward"].append(reward)
 				ep_reward += float(reward)
 				t += 1
 				if frames is not None:
 					frames.append(self.eval_env.render())
 			rewards.append(ep_reward)
 			successes.append(info["success"])
+			if keep is not None:
+				keep.append({k: torch.stack(v) for k, v in traj.items()})
 			if frames is not None:
 				save_video(frames, self.out / "videos" / f"eval_step{self.step:08d}.mp4")
-		return dict(episode_reward=float(np.mean(rewards)), episode_success=float(np.mean(successes)))
+		return dict(episode_reward=float(np.mean(rewards)), episode_success=float(np.mean(successes)),
+		            successes=[float(x) for x in successes])
 
 	# ---------------------------------------------------------------- main loop
+	def train_offline(self):
+		"""Updates only, from the fixed dataset loaded in __init__ (no environment steps); same evaluation and
+		checkpointing as online training. ``--steps`` counts gradient updates."""
+		args = self.args
+		while self.step < args.steps:
+			if self.step >= self.next_eval:
+				m = self.evaluate(record_video=False)
+				m.pop("successes")
+				self.eval_log.write(dict(step=self.step, elapsed=round(self.elapsed(), 1), **m))
+				print(f"[eval] update {self.step:,}  success {m['episode_success']:.2f}", flush=True)
+				self.next_eval += args.eval_freq
+			if self.step >= self.next_ckpt:
+				self.save_checkpoint()
+				self.next_ckpt += args.ckpt_freq
+			if time.time() - self.job_start > args.max_hours * 3600:
+				self.save_checkpoint()
+				print(f"Stopping at update {self.step:,} to be resumed (exit {CHECKPOINT_EXIT_CODE}).")
+				sys.exit(CHECKPOINT_EXIT_CODE)
+			train_metrics = self.agent.update(self.buffer)
+			if self.step % 1000 == 0:
+				self.train_log.write(dict(step=self.step, elapsed=round(self.elapsed(), 1),
+				                          **{k: float(v) for k, v in train_metrics.items()}))
+			self.step += 1
+		self._finish()
+
 	def train(self):
+		if self.args.offline_data:
+			return self.train_offline()
 		args, env = self.args, self.env
 		done, info, train_metrics = True, None, {}
 		sync = torch.cuda.synchronize if torch.cuda.is_available() else (lambda: None)
@@ -289,12 +382,14 @@ class Trainer:
 				if self.step >= self.next_eval:
 					record = self.step >= self.next_video
 					m = self.evaluate(record_video=record)
+					m.pop("successes")
 					self.eval_log.write(dict(step=self.step, elapsed=round(self.elapsed(), 1), **m))
 					print(f"[eval] step {self.step:,}  success {m['episode_success']:.2f}  reward {m['episode_reward']:.2f}")
 					self.next_eval += args.eval_freq
 					if record:
 						self.next_video += args.video_freq
 
+				self._save_snapshots()
 				if self.step >= self.next_ckpt:
 					self.save_checkpoint()
 					self.next_ckpt += args.ckpt_freq
@@ -305,6 +400,20 @@ class Trainer:
 					self.save_checkpoint()
 					print(f"Stopping at step {self.step:,} to be resumed (exit {CHECKPOINT_EXIT_CODE}).")
 					sys.exit(CHECKPOINT_EXIT_CODE)
+
+				if (self.sampler is not None and self.step >= self.cfg.seed_steps and self.step >= self.next_refresh
+				        and len(self.episodes) >= self.sampler.fit_episodes):
+					t0 = time.time()
+					self.sampler.refresh(self.agent, self.episodes)
+					print(f"[replay] step {self.step:,}  refreshed in {time.time() - t0:.0f} s  {self.sampler.stats}", flush=True)
+					self.next_refresh = self.step + args.replay_refresh
+
+				if self.ve is not None and self.step >= self.next_ve_refresh and len(self.episodes) >= 50:
+					t0 = time.time()
+					self.ve.refresh(self.agent, self.episodes)   # activates expansion; refits the audit (lba)
+					print(f"[value expansion] step {self.step:,}  {self.ve.mode} refreshed in {time.time() - t0:.0f} s  "
+					      f"{self.ve.stats}", flush=True)
+					self.next_ve_refresh = self.step + 50_000
 
 				t0 = time.time()
 				obs = env.reset()
@@ -329,14 +438,27 @@ class Trainer:
 					print("Pretraining agent on seed data...")
 				t0 = time.time()
 				for _ in range(num_updates):
-					train_metrics = self.agent.update(self.buffer)
+					train_metrics = self.agent.update(self.sampler if self.sampler is not None else self.buffer)
 				sync()
 				timers["update"] += time.time() - t0
 			self.step += 1
 
-		m = self.evaluate(record_video=True)
+		self._finish()
+
+	def _finish(self):
+		args = self.args
+		kept = []
+		m = self.evaluate(record_video=True, episodes=args.final_eval_episodes, keep=kept)
+		final = dict(step=self.step, seeds=list(range(args.eval_seed_start, args.eval_seed_start + len(m["successes"]))), **m)
+		try:   # how wrong the final model's imagination is on its own evaluation episodes
+			from src.training.audit_replay import imagination_error
+			final.update(imagination_error(self.agent, kept))
+		except Exception as exc:   # never lose a finished run over this diagnostic
+			final["imagination_error_failed"] = repr(exc)
+		(self.out / "final_eval.json").write_text(json.dumps(final, indent=1))
+		m.pop("successes")
 		self.eval_log.write(dict(step=self.step, elapsed=round(self.elapsed(), 1), **m))
-		print(f"[final eval] step {self.step:,}  success {m['episode_success']:.2f}")
+		print(f"[final eval] step {self.step:,}  success {m['episode_success']:.2f}  return error {final.get('return_error_last')}")
 		self.save_checkpoint(finished=True)
 		torch.save(self.agent.checkpoint_state()["model"], self.out / "final_model.pt")
 		self._push_mirror()

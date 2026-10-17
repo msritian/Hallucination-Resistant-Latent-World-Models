@@ -1,0 +1,42 @@
+{
+ "H3": {
+  "success": 0.96,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "default": {
+  "success": 0.78,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "imagined": {
+  "success": 0.74,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "corrected": {
+  "success": 0.76,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "penD": {
+  "success": 0.72,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "penM": {
+  "success": 0.76,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "oracle": {
+  "success": 0.92,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "random": {
+  "success": 0.72,
+  "warning_rate": 0.0,
+  "episodes": 50
+ }
+}

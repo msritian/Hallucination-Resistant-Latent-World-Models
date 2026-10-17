@@ -1,0 +1,6 @@
+dmc48c_g0, task=mt30 model_size=48 checkpoint=/staging/s/smittal39/tdmpc2_pre/ckpt/mt30-48M.pt +episodes=20 +tasks_subset=walker-stand+walker-walk+walker-run+cheetah-run+reacher-easy
+dmc48c_g1, task=mt30 model_size=48 checkpoint=/staging/s/smittal39/tdmpc2_pre/ckpt/mt30-48M.pt +episodes=20 +tasks_subset=reacher-hard+acrobot-swingup+pendulum-swingup+cartpole-balance+cartpole-balance-sparse
+dmc48c_g2, task=mt30 model_size=48 checkpoint=/staging/s/smittal39/tdmpc2_pre/ckpt/mt30-48M.pt +episodes=20 +tasks_subset=cartpole-swingup+cartpole-swingup-sparse+cup-catch+finger-spin+finger-turn-easy
+dmc48c_g3, task=mt30 model_size=48 checkpoint=/staging/s/smittal39/tdmpc2_pre/ckpt/mt30-48M.pt +episodes=20 +tasks_subset=finger-turn-hard+fish-swim+hopper-stand+hopper-hop+walker-walk-backwards
+dmc48c_g4, task=mt30 model_size=48 checkpoint=/staging/s/smittal39/tdmpc2_pre/ckpt/mt30-48M.pt +episodes=20 +tasks_subset=walker-run-backwards+cheetah-run-backwards+cheetah-run-front+cheetah-run-back+cheetah-jump
+dmc48c_g5, task=mt30 model_size=48 checkpoint=/staging/s/smittal39/tdmpc2_pre/ckpt/mt30-48M.pt +episodes=20 +tasks_subset=hopper-hop-backwards+reacher-three-easy+reacher-three-hard+cup-spin+pendulum-spin

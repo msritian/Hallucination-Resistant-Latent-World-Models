@@ -1,0 +1,52 @@
+{
+ "H3": {
+  "success": 0.38,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "default": {
+  "success": 0.34,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "imagined": {
+  "success": 0.52,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "corrected": {
+  "success": 0.34,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "relvalue": {
+  "success": 0.38,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "valuepred": {
+  "success": 0.34,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "penD": {
+  "success": 0.44,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "penM": {
+  "success": 0.42,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "oracle": {
+  "success": 0.58,
+  "warning_rate": 0.0,
+  "episodes": 50
+ },
+ "random": {
+  "success": 0.38,
+  "warning_rate": 0.0,
+  "episodes": 50
+ }
+}

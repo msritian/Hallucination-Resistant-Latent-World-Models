@@ -54,6 +54,14 @@ class GroundedTDMPC2(TDMPC2):
 			"scale": self.scale.state_dict(),
 		}
 
+	value_expansion = None   # src.training.value_expansion.ValueExpansion, set by the trainer (hallucination-aware targets)
+
+	def _td_target(self, next_z, reward, terminated, task):
+		ve = self.value_expansion
+		if ve is not None and ve.active and ve.mode != "none":
+			return ve.target(self, next_z, reward, terminated, task)
+		return super()._td_target(next_z, reward, terminated, task)
+
 	def load_checkpoint_state(self, state: dict) -> None:
 		self.model.load_state_dict(state["model"])
 		self.optim.load_state_dict(state["optim"])

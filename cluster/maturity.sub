@@ -1,0 +1,31 @@
+# Training-maturity study: detector features for one model snapshot per job (cluster/maturity.sh).
+# Usage:  condor_submit maturity.sub queue_file=mat_feat_runs.txt
+# Queue file lines: task, models, file, tag   e.g.  StackCube-v1, matmodels_mat_grounded_stack_s60, snap_125000.pt, 125000
+universe = container
+container_image = osdf:///chtc/staging/s/smittal39/tdmpc2_v3.sif
+
+executable = maturity.sh
+arguments = $(task) $(models) $(file)
+transfer_input_files = code_mat/code.tar.gz, results/$(models).tar.gz
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+stream_output = True
+stream_error = True
+transfer_output_files = maturity.tar.gz
+transfer_output_remaps = "maturity.tar.gz = results/mfeat_$(models)_$(tag).tar.gz"
+
+log = logs/mfeat_$(models)_$(tag).log
+output = logs/mfeat_$(models)_$(tag).$(Cluster).out
+error = logs/mfeat_$(models)_$(tag).$(Cluster).err
+
+requirements = (TARGET.PoolName =?= "CHTC") && (TARGET.Machine =!= "gpu117.cm.cluster")
+request_gpus = 1
+gpus_minimum_capability = 7.0
+gpus_maximum_capability = 12.0
++WantGPULab = true
++GPUJobLength = "short"
+request_cpus = 4
+request_memory = 8GB
+request_disk = 20GB
+
+queue task, models, file, tag from $(queue_file)

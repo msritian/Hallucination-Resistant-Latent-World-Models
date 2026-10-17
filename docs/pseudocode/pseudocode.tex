@@ -1,0 +1,572 @@
+% Pseudocode, math and plain-language explanations of the Bellman-consistency hallucination detector.
+% Self-contained: upload this single file to Overleaf and compile with pdfLaTeX.
+% Companion to docs/problem_formulation.tex (same notation) and the Markdown files in docs/pseudocode/.
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,booktabs,enumitem,array}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage[most]{tcolorbox}
+\usepackage[hidelinks]{hyperref}
+
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\abs}[1]{\left|#1\right|}
+\newcommand{\Qbar}{\bar Q}
+\newcommand{\sd}{\operatorname{std}}
+\newcommand{\med}{\operatorname{median}}
+\newcommand{\code}[1]{\texttt{#1}}
+\algrenewcommand\algorithmicrequire{\textbf{Input:}}
+\algrenewcommand\algorithmicensure{\textbf{Output:}}
+
+\newtcolorbox{inwords}{colback=blue!3,colframe=blue!40!black,boxrule=0.4pt,arc=2pt,
+  left=6pt,right=6pt,top=4pt,bottom=4pt,fonttitle=\bfseries\small,title=In words}
+\newtcolorbox{example}[1][]{colback=green!3,colframe=green!35!black,boxrule=0.4pt,arc=2pt,
+  left=6pt,right=6pt,top=4pt,bottom=4pt,fonttitle=\bfseries\small,title=Small example,#1}
+
+\title{The Bellman-Consistency Audit:\\Pseudocode, Formulas and Explanations}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+This document explains, step by step, what the code computes: every formula, an algorithm box for every procedure,
+and a plain-language explanation with a small example. Each part names the function in the repository it
+describes. Notation follows \code{docs/problem\_formulation.tex}.
+
+\paragraph{Fixed settings.} Imagined horizon $H=12$ for detection ($24$ and $40$ in the compounding study), audited
+steps $L=H-1$, critic heads $K=5$, discount $\gamma=0.95$ (ManiSkill; $0.99$ on DeepMind Control), UCB weight
+$\beta=1$.
+
+\tableofcontents
+\bigskip
+
+\begin{algorithm}[h]
+\caption{End-to-end, for one trained robot}\label{alg:e2e}
+\begin{algorithmic}[1]
+\State $\theta\gets$ trained TD-MPC2 agent \Comment{frozen; the detector never changes it}
+\State $\mathcal{D}\gets$ 50 real episodes recorded with the agent's own planner \Comment{observations, actions, real rewards}
+\State $\mathcal{C},\mathcal{T}\gets$ first 25 episodes (calibration), last 25 (test)
+\State $b\gets\textsc{CriticBias}(\theta,\mathcal{C})$ \Comment{Sec.~\ref{sec:bias}}
+\State $(X_{\mathcal C},\text{rollouts})\gets\textsc{AuditFeatures}(\theta,\mathcal{C},b)$ \Comment{$\Delta$: Alg.~\ref{alg:bellman}}
+\State $(y_{\mathcal C},\varepsilon_{\text{hall}},\varepsilon_{\text{clean}})\gets\textsc{AnswerKey}(\text{rollouts},\mathcal{C})$ \Comment{Sec.~\ref{sec:labels}}
+\State $f\gets\textsc{FitTrees}(X_{\mathcal C},y_{\mathcal C})$ \Comment{Sec.~\ref{sec:trees}}
+\State $(X_{\mathcal T},\text{rollouts})\gets\textsc{AuditFeatures}(\theta,\mathcal{T},b)$ \Comment{same $\Delta$ signals on the test half}
+\State $y_{\mathcal T}\gets\textsc{AnswerKey}(\text{rollouts},\mathcal{T};\ \varepsilon_{\text{hall}},\varepsilon_{\text{clean}})$ \Comment{thresholds from calibration only}
+\State $p_{\mathcal T}\gets f(X_{\mathcal T})$ \Comment{hallucination probability per imagined step}
+\State \Return $\textsc{StratifiedAUROC}(p_{\mathcal T},y_{\mathcal T})$ \Comment{Sec.~\ref{sec:eval}; ours $\approx0.82$}
+\end{algorithmic}
+\end{algorithm}
+
+\begin{inwords}
+We take a trained robot and never change it. We record 50 real episodes. On the first 25 we learn what ``normal''
+looks like and fit the detector. On the other 25 we test it: for every piece of imagined future we know the real
+outcome, so we can check whether the detector raised its alarm on the right pieces.
+\end{inwords}
+
+%==================================================================================================================
+\section{World model and imagined rollout}\label{sec:wm}
+%==================================================================================================================
+
+\subsection{The TD-MPC2 parts we use (trained, frozen)}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Part & Formula & Meaning\\
+\midrule
+Encoder & $z=h_\theta(o)$ & real observation $\to$ latent vector (there is no decoder)\\
+Dynamics & $\hat z'=d_\theta(z,a)$ & deterministic next latent\\
+Reward head & $\hat r=R_\theta(z,a)$ & predicted reward (two-hot over 101 bins $\to$ scalar)\\
+Critic heads & $Q^{(i)}_\theta(z,a),\ i=1..K$ & $K=5$ value estimates (two-hot $\to$ scalar)\\
+Policy prior & $\mu_\pi(z)$ & mean action of the policy\\
+Mean critic & $\Qbar(z,a)=\frac1K\sum_i Q^{(i)}_\theta(z,a)$ & \\
+Value & $V_\theta(z)=\frac1K\sum_i Q^{(i)}_\theta\bigl(z,\mu_\pi(z)\bigr)$ & value of a state, used everywhere below\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{How TD-MPC2 trains its critic} (\code{third\_party/tdmpc2/tdmpc2/tdmpc2.py::\_update}).
+A training sample is a short real slice $o_0..o_3$, $a_0..a_2$, $r_0..r_2$ from the replay buffer:
+\begin{align*}
+z_0&=h_\theta(o_0)\ \text{(real)},\qquad \hat z_{t+1}=d_\theta(\hat z_t,a_t)\ \text{(imagined)},\\
+y_t&=r_t+\gamma\min_{\text{2 random target heads}}Q^{(i)}_{\bar\theta}\bigl(h_\theta(o_{t+1}),\pi(h_\theta(o_{t+1}))\bigr)
+\quad\text{(real reward, real next observation)},\\
+\mathcal{L}_Q&=\sum_t\rho^t\sum_i\operatorname{CE}\bigl(Q^{(i)}_\theta([z_0,\hat z_1,\hat z_2]_t,a_t),\ y_t\bigr).
+\end{align*}
+The critic's \emph{inputs} are partly imagined but its \emph{targets} come from real rewards and real next
+observations. Our \emph{grounded} variant feeds $h_\theta(o_t)$ instead of $\hat z_t$ as the critic input, with no
+gradient into the encoder or dynamics, so the critic is anchored to real states.
+
+\subsection{Imagined rollout (\code{src/auditor/signals.py::audit\_rollout})}
+
+Given a real observation $o_t$ and actions $\mathbf a=(a_0,\dots,a_{H-1})$:
+\begin{align*}
+\hat z_0&=h_\theta(o_t)\quad\text{(real)},\qquad \hat z_{k+1}=d_\theta(\hat z_k,a_k)\quad\text{(imagined)},\\
+\hat r_k&=R_\theta(\hat z_k,a_k),\qquad q^{(i)}_k=Q^{(i)}_\theta(\hat z_k,a_k),\qquad q_k=\tfrac1K\textstyle\sum_iq^{(i)}_k,\\
+v^{(i)}_k&=Q^{(i)}_\theta\bigl(\hat z_k,\mu_\pi(\hat z_k)\bigr),\qquad v_k=\tfrac1K\textstyle\sum_iv^{(i)}_k=V_\theta(\hat z_k),
+\qquad k=0,\dots,H \ (\text{$\hat r,q$ up to }H-1).
+\end{align*}
+
+\begin{algorithm}[h]
+\caption{\textsc{Imagine}$(o_t,\mathbf a)$}\label{alg:imagine}
+\begin{algorithmic}[1]
+\Require real observation $o_t$; actions $a_0..a_{H-1}$
+\State $\hat z_0\gets h_\theta(o_t)$ \Comment{the only real point of the rollout}
+\For{$k=0$ to $H-1$}
+  \State $\hat z_{k+1}\gets d_\theta(\hat z_k,a_k)$
+  \State $\hat r_k\gets R_\theta(\hat z_k,a_k)$;\quad $q^{(i)}_k\gets Q^{(i)}_\theta(\hat z_k,a_k)$ for $i=1..K$;\quad $q_k\gets\operatorname{mean}_i q^{(i)}_k$
+\EndFor
+\For{$k=0$ to $H$}
+  \State $v^{(i)}_k\gets Q^{(i)}_\theta(\hat z_k,\mu_\pi(\hat z_k))$ for $i=1..K$;\quad $v_k\gets\operatorname{mean}_i v^{(i)}_k$
+\EndFor
+\State \Return rollout $(\hat z,\hat r,q^{(\cdot)},q,v^{(\cdot)},v)$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{inwords}
+The robot ``daydreams'': starting from what it really sees, it predicts the next hidden state, then the next, and
+so on for $H$ steps. At every imagined step it also predicts the reward it would get and how good the situation is
+(the value). During detection the actions are the ones the robot really executed, so the real outcome is known.
+At run time they can be any candidate plan.
+\end{inwords}
+
+%==================================================================================================================
+\section{The signals}\label{sec:signals}
+%==================================================================================================================
+
+All signals use the imagined rollout only: no simulator and no real future. Index $k=0,\dots,H-1$ (the learned
+audit uses $k=0,\dots,L-1$).
+
+\subsection{The core check: the Bellman residual}
+
+For a consistent model, the value of a step equals its reward plus the discounted value of the next state:
+\[
+\Delta_k \;=\; \hat r_k+\gamma\,v_{k+1}-q_k \qquad(\text{signed residual, }\code{Rollout.signed\_residual}).
+\]
+If the imagination is consistent, $\Delta_k\approx0$ up to normal approximation error.
+
+\begin{example}
+The critic says the current step is worth $q_k=10$. The model imagines a reward $\hat r_k=1$ and says the next
+imagined state is worth $v_{k+1}=3$. With $\gamma=0.95$: $\Delta_k=1+0.95\cdot3-10=-6.15$. The numbers do not add up,
+so something in this imagined step is suspicious.
+\end{example}
+
+\subsection{Our 14 signals (\code{run\_preflight.py::plan\_signals}, \code{src/auditor/signals.py})}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.35}
+\begin{tabular}{@{}l>{$\displaystyle}l<{$}p{5.2cm}@{}}
+\toprule
+Name & \text{Formula} & What it catches\\
+\midrule
+A & \abs{\Delta_k} & one-step residual: sudden errors\\
+A$n$ ($n{=}2,3,5,8$) & \abs{q_s-\Bigl(\sum_{j=s}^{k}\gamma^{j-s}\hat r_j+\gamma^{k-s+1}v_{k+1}\Bigr)},\ s=\max(0,k{-}n{+}1) & $n$-step residual ending at step $k$\\
+Aa (anchored) & \abs{q_0-\Bigl(\sum_{j=0}^{k}\gamma^{j}\hat r_j+\gamma^{k+1}v_{k+1}\Bigr)} & imagined return vs the critic at the \emph{real} start: gradual drift\\
+Ac (cumulative) & \abs{\sum_{j=0}^{k}\gamma^j\Delta_j} & signed sum: noise cancels, consistent drift adds up\\
+Ao (optimistic) & \max(0,\Delta_k) & only over-promising steps (the ones a planner's argmax picks)\\
+P & \sd_i\bigl(\hat r_k+\gamma v^{(i)}_{k+1}-q^{(i)}_k\bigr) & residual spread across critic heads\\
+At & \abs{q_k-\Bigl(\hat r_k+\gamma\,\overline{\min}_{i<j}\bigl(v^{(i)}_{k+1,\text{tgt}},v^{(j)}_{k+1,\text{tgt}}\bigr)\Bigr)} & residual vs the critic's own training target (mean pairwise min of target heads)\\
+B & \sd_i\,v^{(i)}_{k+1} & critic disagreement (also a baseline)\\
+E & v_{k+1}+\beta\,\sd_i\,v^{(i)}_{k+1} & ELVIS-style optimistic value (also a baseline)\\
+Ab & \abs{\Delta_k-b_k} & bias-corrected one-step residual\\
+Acb & \abs{\sum_{j=0}^{k}\gamma^j(\Delta_j-b_j)} & bias-corrected cumulative residual\\
+\bottomrule
+\end{tabular}
+\end{center}
+That is 14 signals: A, A2, A3, A5, A8, Aa, Ac, Ao, P, At, B, E, Ab, Acb. Note A1 $=$ A, and Aa $=$ A at $k=0$.
+
+\begin{inwords}
+\textbf{A} checks one step at a time, so it catches sudden jumps. \textbf{Aa} always compares back to the real
+starting point, where the critic is trustworthy, so small errors pile up against a fixed reference and slow drift
+becomes visible. \textbf{Ac} adds the signed residuals: random noise has random signs and cancels, while a drift
+pushes in one direction and grows. The others look at the same check from different angles (several steps, only
+optimistic errors, disagreement between critic heads, the critic's own training target).
+\end{inwords}
+
+\begin{example}[title=Small example: why anchoring helps]
+Suppose every imagined step is off by only $+0.3$ in value, below the alarm level of a one-step check. After 10
+steps, A still sees $\approx0.3$ per step, but Aa compares the whole imagined return with the real start and sees
+roughly $0.3\cdot(1+\gamma+\dots+\gamma^{9})\approx2.4$: the drift has become visible.
+\end{example}
+
+\subsection{Where $\Delta$ is computed: \textsc{BellmanSignals}}\label{sec:bellmansignals}
+
+This is the core of the method. \textsc{Imagine} (Algorithm~\ref{alg:imagine}) only produces the ingredients
+$\hat r_k$, $q_k$, $v_k$ (and the per-head $q^{(i)}_k$, $v^{(i)}_k$). \textsc{BellmanSignals} combines them into the
+residual $\Delta_k$ and its 14 readings. Every later step (bias, features, trees, alarm) uses its output.
+In the code: $\Delta$ at \code{src/auditor/signals.py:151} (unsigned) and \code{Rollout.signed\_residual} (signed);
+Aa in \code{anchored\_residual}; Ac in \code{cumulative\_signed\_residual}; all 14 collected in
+\code{run\_preflight.py::plan\_signals}.
+
+\begin{algorithm}[h]
+\caption{\textsc{BellmanSignals}(rollout, $b$) \quad --- the Bellman residual and its 14 readings}\label{alg:bellman}
+\begin{algorithmic}[1]
+\Require rollout $(\hat r,q,q^{(\cdot)},v,v^{(\cdot)})$ from \textsc{Imagine}; optional critic bias $b$ (\textsc{CriticBias})
+\For{$k=0$ to $H-1$}
+  \State $\boldsymbol{\Delta_k\gets\hat r_k+\gamma\,v_{k+1}-q_k}$ \Comment{\textbf{the core check}}
+  \State $\text{A}_k\gets|\Delta_k|$;\quad $\text{Ao}_k\gets\max(0,\Delta_k)$ \Comment{sudden errors}
+  \State $\text{Ac}_k\gets\bigl|\sum_{j\le k}\gamma^j\Delta_j\bigr|$ \Comment{drift adds up}
+  \State $\text{Aa}_k\gets\bigl|q_0-\bigl(\sum_{j\le k}\gamma^j\hat r_j+\gamma^{k+1}v_{k+1}\bigr)\bigr|$ \Comment{vs the \emph{real} start}
+  \State $\text{A}n_k$, $n\in\{2,3,5,8\}$: the same check over the last $n$ steps
+  \State $\text{P}_k\gets\sd_i\bigl(\hat r_k+\gamma v^{(i)}_{k+1}-q^{(i)}_k\bigr)$ \Comment{per critic head}
+  \State $\text{At}_k\gets\bigl|q_k-(\hat r_k+\gamma\,\overline{\min}_{i<j}(v^{(i)}_{k+1,\text{tgt}},v^{(j)}_{k+1,\text{tgt}}))\bigr|$ \Comment{vs training target}
+  \State $\text{B}_k\gets\sd_i v^{(i)}_{k+1}$;\quad $\text{E}_k\gets v_{k+1}+\beta\,\text{B}_k$ \Comment{not residuals}
+  \If{$b$ is given}
+    \State $\text{Ab}_k\gets|\Delta_k-b_k|$;\quad $\text{Acb}_k\gets\bigl|\sum_{j\le k}\gamma^j(\Delta_j-b_j)\bigr|$ \Comment{bias removed}
+  \EndIf
+\EndFor
+\State \Return the 14 signals per step \Comment{12 of them are built from $\Delta$; B and E are critic-only}
+\end{algorithmic}
+\end{algorithm}
+
+\begin{inwords}
+Algorithm~\ref{alg:imagine} is the daydream; Algorithm~\ref{alg:bellman} is the lie detector reading it. Line 2 is the
+one idea everything rests on: \emph{value now} should equal \emph{reward now plus discounted value next}. The other lines
+read that same mismatch in different ways: one step at a time (A), summed along the rollout (Ac), measured back to the
+real starting point (Aa), over a few steps (A2--A8), per critic head (P), or after removing the critic's normal offset
+(Ab, Acb).
+\end{inwords}
+
+\subsection{Where $\Delta$ comes into the picture, and where it is used}\label{sec:deltamap}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.25}
+\begin{tabular}{@{}c@{}}
+\fbox{\textsc{Imagine} (Alg.~\ref{alg:imagine}):\ \ real $o_t$ $\to$ imagined $\hat z_1..\hat z_H$ with $\hat r_k,\ q_k,\ v_k$}\\[2pt]
+$\big\downarrow$ \small ingredients\\[2pt]
+\fbox{\textbf{\textsc{BellmanSignals} (Alg.~\ref{alg:bellman}):\ \ $\Delta_k=\hat r_k+\gamma v_{k+1}-q_k$\ \ $\to$ 14 signals}}\\[2pt]
+$\big\downarrow$\\[2pt]
+\fbox{features: each signal now and its maximum so far, plus $v_{k+1},\hat r_k,k$ \ (31 numbers)}\\[2pt]
+$\big\downarrow$\\[2pt]
+\fbox{trees $f$ (fitted once in \textsc{FitTrees})}\ \ $\to$\ \ \fbox{alarm $p_k$ per imagined step (\textsc{Detect})}
+\end{tabular}
+\end{center}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{}p{3.4cm}p{8.2cm}l@{}}
+\toprule
+Stage & What happens to $\Delta$ & Algorithm\\
+\midrule
+Computed & from the rollout's own predictions only (no simulator, no real future) & \ref{alg:bellman}\\
+Critic bias & median of $\Delta_k$ on verifiably clean calibration steps gives $b_k$ & \ref{alg:bias}\\
+Features & the 14 signals (12 built from $\Delta$) become 31 numbers per step & \ref{alg:fit}, \ref{alg:detect}\\
+Trees learn & which patterns of $\Delta$ (size, growth, where in the rollout) mean hallucination & \ref{alg:fit}\\
+Alarm & frozen trees turn the signals into $p_k$ at run time & \ref{alg:detect}\\
+\textbf{Labels} & \textbf{$\Delta$ is never used}: hallucinations are labelled from real rewards only, so the
+detector is never graded by its own ingredients & \ref{alg:labels}\\
+Long rollouts & growth of Aa, Ac and the learned audit vs ensembles (Appendix) & ---\\
+Training & the audit's alarm sets trust in value expansion (Appendix) & ---\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{What is and is not new.} The Bellman residual itself is the classic temporal-difference error that every
+value-based RL method trains on. What is new is its use as a \emph{run-time hallucination check on imagined latent
+rollouts}: computed with no simulator, anchored at the one real point of the rollout (Aa), judged by a critic
+grounded in real data, and read by a learned audit.
+
+\subsection{Critic bias (\code{run\_preflight.py::calibration\_bias})}\label{sec:bias}
+
+Even on correct steps, the mean critic sits slightly below $\hat r+\gamma v$, because TD-MPC2 trains toward a
+\emph{minimum} of two heads. We measure this offset once per robot on verifiably clean calibration steps.
+
+\begin{algorithm}[h]
+\caption{\textsc{CriticBias}$(\theta,\mathcal C)$}\label{alg:bias}
+\begin{algorithmic}[1]
+\For{every length-$H$ window $w$ in the calibration episodes} \Comment{real start, real actions, real next observations}
+  \State rollout $\gets\textsc{Imagine}(o^w_0,\mathbf a^w)$;\quad $\Delta^w\gets\textsc{BellmanSignals}(\text{rollout})$ \Comment{no bias yet}
+  \State $e^w_k\gets\bigl\|\hat z_{k+1}-h_\theta(o^w_{k+1})\bigr\|$ for $k=0..H-1$ \Comment{latent error}
+\EndFor
+\State $\tau\gets P_{90}\bigl(\{e^w_0\}_w\bigr)$
+\State clean$^w_k\gets\bigl[e^w_j\le\tau\ \ \forall j\le k\bigr]$ \Comment{clean prefix}
+\State \Return $b_k=\med\{\Delta^w_k:\ \text{clean}^w_k\}$ for $k=0..H-1$ \Comment{the critic's normal $\Delta$ offset}
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Baselines (same windows)}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.35}
+\begin{tabular}{@{}l>{$\displaystyle}l<{$}p{5.6cm}@{}}
+\toprule
+Name & \text{Formula} & Notes\\
+\midrule
+D & \tfrac1d\sum_{\text{dims}}\sd_m\, d^{(m)}_\theta(\hat z_k,a_k) & one-step dynamics-ensemble disagreement along the main rollout (MOPO / MACURA style); needs 4 extra dynamics heads\\
+M & \sd_m\bigl(\hat r_k+\gamma V_\theta(d^{(m)}_\theta(\hat z_k,a_k))\bigr) & MOBILE-style spread of Bellman targets\\
+B, E & \text{as above} & critic disagreement; ELVIS-style UCB (no extra models)\\
+\bottomrule
+\end{tabular}
+\end{center}
+The extra dynamics heads $d^{(1..4)}$ ($d^{(0)}=d_\theta$) are trained alongside the model on detached inputs, so
+they never shape the encoder. Trajectory-level ensembles (Dt, Mt) are in Appendix~\ref{app:traj}.
+
+%==================================================================================================================
+\section{The answer key: what counts as a hallucination}\label{sec:labels}
+%==================================================================================================================
+
+Labels use only rewards (which the model is trained to predict) and the real rewards of the same actions from the
+same real state (\code{run\_preflight.py::return\_error}). No probe, no reconstruction, no critic.
+
+\begin{definition}[Imagination error]
+\[
+E_k=\abs{\sum_{j=1}^{k+1}\gamma^{\,j-1}\bigl(\hat r_j-r_j\bigr)},\qquad k=0,\dots,H-2,
+\]
+where $r_j$ is the real reward of action $a_j$ along the real trajectory. $\hat r_0$ is excluded because
+$\hat z_0$ is the encoding of a real observation. Step $k$ judges the transition into $\hat z_{k+1}$.
+\end{definition}
+
+\begin{definition}[Thresholds and labels]
+From the calibration half only, with $e_0$ the one-transition errors $E_0$ of all calibration windows:
+$\varepsilon_{\text{hall}}=P_{99}(e_0)$, $\varepsilon_{\text{clean}}=P_{90}(e_0)$, and
+\[
+y_k=\begin{cases}1&E_k>\varepsilon_{\text{hall}}\quad\text{hallucinated}\\
+0&E_k\le\varepsilon_{\text{clean}}\quad\text{correct}\\
+\text{excluded}&\text{otherwise (ambiguous; never used for training or scoring).}\end{cases}
+\]
+\end{definition}
+
+\begin{definition}[Sudden vs gradual]
+With increments $I_j=E_j-E_{j-1}$ ($E_{-1}=0$) and $\kappa=P_{99}$ of calibration increments, a positive step $k$ is
+\emph{sudden} if $I_j>\kappa$ for some $j\le k$, and \emph{gradual} otherwise.
+\end{definition}
+
+\begin{algorithm}[h]
+\caption{\textsc{AnswerKey}(rollouts, episodes; thresholds)}\label{alg:labels}
+\begin{algorithmic}[1]
+\For{every window $w$} \State $E^w_k\gets\abs{\sum_{j=1}^{k+1}\gamma^{j-1}(\hat r^w_j-r^w_j)}$, $k=0..H-2$ \EndFor
+\If{calibration} \State $\varepsilon_{\text{hall}}\gets P_{99}(\{E^w_0\})$;\ $\varepsilon_{\text{clean}}\gets P_{90}(\{E^w_0\})$ \EndIf
+\State $y^w_k\gets 1$ if $E^w_k>\varepsilon_{\text{hall}}$;\ $0$ if $E^w_k\le\varepsilon_{\text{clean}}$;\ excluded otherwise
+\State \Return labels $y$ (and thresholds)
+\end{algorithmic}
+\end{algorithm}
+
+\begin{inwords}
+A hallucination is an imagined future whose rewards add up to something really different from what actually
+happened when the same actions were taken. ``Really different'' is measured against the model's own normal
+one-step accuracy: only the worst 1\% of one-step errors counts as the bar for a hallucination, and anything
+in the grey zone between ``normal'' and ``clearly wrong'' is left out so the test is not muddied.
+\end{inwords}
+
+\begin{example}
+Calibration shows that one-step errors are usually tiny: $P_{90}=0.05$, $P_{99}=0.20$. A window whose imagined
+reward sum is off by $0.6$ after 5 steps is labelled hallucinated at that step; one that is off by $0.03$ is
+correct; one off by $0.10$ is ambiguous and skipped.
+\end{example}
+
+The simulator is deterministic given its state, so one real execution gives the real reward (a saved-state replay
+reproduces a real step exactly on over 99\% of steps). In a stochastic environment, $r_j$ would be the average over
+several replays.
+
+%==================================================================================================================
+\section{The learned audit: features and trees}\label{sec:features}
+%==================================================================================================================
+
+\subsection{Features: 31 numbers per imagined step (\code{run\_preflight.py::\_features})}
+
+For the 14 signals $S=\{\text{A},\text{Aa},\text{Ac},\text{Ab},\text{Acb},\text{P},\text{B},\text{E},\text{At},
+\text{Ao},\text{A2},\text{A3},\text{A5},\text{A8}\}$:
+\[
+x_k=\Bigl(\ \bigl[s_k,\ \max_{j\le k}s_j\bigr]_{s\in S},\ \ v_{k+1},\ \ \hat r_k,\ \ k\ \Bigr)\in\R^{14\cdot2+3}=\R^{31}.
+\]
+Each signal contributes its value now and the highest value so far in this rollout; then the imagined value, the
+predicted reward and the step index.
+
+\subsection{Fit once per robot, then freeze (\code{fit\_lba}, \code{make\_gbt})}\label{sec:trees}
+
+\begin{algorithm}[h]
+\caption{\textsc{FitTrees}}\label{alg:fit}
+\begin{algorithmic}[1]
+\State $X,y\gets[\ ],[\ ]$
+\For{every length-$H$ window $w$ of the 25 calibration episodes}
+  \State rollout $\gets\textsc{Imagine}(o^w_0,\mathbf a^w)$;\quad signals $\gets\textsc{BellmanSignals}(\text{rollout},b)$ \Comment{$\Delta$ here}
+  \State $E^w\gets$ imagination error from real rewards (\textsc{AnswerKey}) \Comment{labels never use $\Delta$}
+  \For{$k=0$ to $L-1$}
+    \If{$y^w_k$ is not excluded} \State append $x^w_k$ to $X$ and $y^w_k$ to $y$ \EndIf
+  \EndFor
+\EndFor
+\State \Return gradient-boosted trees fitted on $(X,y)$ \Comment{200 trees, 15 leaves, learning rate 0.05, $\ell_2=1$, balanced classes, seed 0}
+\end{algorithmic}
+\end{algorithm}
+
+The tree settings are fixed for every robot and were never tuned on test data. The trees output
+$p_k=\Pr(y_k=1\mid x_k)$.
+
+\subsection{Predict (no labels, no simulator)}
+
+\begin{algorithm}[h]
+\caption{\textsc{Detect}$(f,b,o_t,\mathbf a)$}\label{alg:detect}
+\begin{algorithmic}[1]
+\State rollout $\gets\textsc{Imagine}(o_t,\mathbf a)$;\quad signals $\gets\textsc{BellmanSignals}(\text{rollout},b)$ \Comment{$\Delta$ here}
+\State \Return $p_k=f(x_k)$ for $k=0..L-1$ \Comment{probability that imagined step $k$ is hallucinated}
+\end{algorithmic}
+\end{algorithm}
+
+\begin{inwords}
+No single signal is right everywhere: one is good at sudden jumps, another at slow drift, another near the end of a
+rollout. The small decision trees learn, from the calibration episodes, which combinations really mean
+``hallucination'' for this robot. After that they are frozen and only read the signals.
+\end{inwords}
+
+\paragraph{Variants reported.} The same features with logistic regression (``linear''); single raw signals such as
+Aa; and controls: \emph{NoBellman} trees with only $(v_{k+1},\hat r_k,k)$, and \emph{BellmanOnly} trees with the
+signals and $k$ only. The Bellman signals add about $+0.05$ AUROC over NoBellman on both benchmarks.
+
+%==================================================================================================================
+\section{Evaluation}\label{sec:eval}
+%==================================================================================================================
+
+\subsection{Protocol per trained robot (\code{run\_preflight.py::evaluate\_model})}
+
+Record 50 episodes with the agent's own planner (evaluation mode, seeds 2000--2049). Fit everything (bias,
+thresholds, trees) on the first 25; nothing from the test half is used for fitting. For every length-$H$ window of
+every test episode (start at each real step, real actions): imagine, label with the answer key, and score with
+every detector (ours and baselines).
+
+\subsection{Metric: step-stratified AUROC (\code{src/preflight/metrics.py})}
+
+For scores $s$ and labels $y$, with positives $\mathcal P$ and negatives $\mathcal N$:
+\[
+\operatorname{AUROC}=\frac{1}{|\mathcal P||\mathcal N|}\sum_{p\in\mathcal P}\sum_{n\in\mathcal N}
+\Bigl(\mathbb 1[s_p>s_n]+\tfrac12\,\mathbb 1[s_p=s_n]\Bigr).
+\]
+Errors naturally grow with the imagined step, so a detector that only knows ``later is worse'' would look good.
+We therefore compare only within the same step $k$ and pool:
+\[
+\operatorname{AUROC}_{\text{strat}}=\frac{\sum_k n_k\operatorname{AUROC}_k}{\sum_k n_k},\qquad n_k=|\mathcal P_k|\,|\mathcal N_k|.
+\]
+
+\begin{inwords}
+AUROC answers: if I pick one hallucinated step and one correct step at random, how often does the detector give the
+hallucinated one the higher alarm? $0.5$ is a coin flip, $1.0$ is perfect. ``Stratified'' means we only ever compare
+steps at the same distance into the future, so the detector cannot win just by knowing that later steps are worse.
+\end{inwords}
+
+\begin{example}
+3 hallucinated steps with scores $0.9,0.7,0.4$ and 2 correct steps with scores $0.5,0.2$. Of the $3\times2=6$ pairs,
+the hallucinated one scores higher in 5 ($0.4<0.5$ is the only miss), so AUROC $=5/6\approx0.83$.
+\end{example}
+
+\subsection{Uncertainty and comparisons}
+
+\begin{itemize}[nosep]
+\item \textbf{Bootstrap CI:} resample whole test episodes with replacement 1000 times; the 95\% interval is
+$[P_{2.5},P_{97.5}]$ of $\operatorname{AUROC}_{\text{strat}}$ over resamples (episodes, not steps, because steps of one
+episode are correlated).
+\item \textbf{Paired difference:} the same resampled episodes for both detectors; ours is significantly better
+if the 95\% interval of $\operatorname{AUROC}_{\text{ours}}-\operatorname{AUROC}_{\text{rival}}$ excludes 0.
+\item Reported for all positives, sudden-only positives and gradual-only positives.
+\end{itemize}
+
+\subsection{Robots and confirmation}
+
+Main tables: 4 ManiSkill tasks (PushCube, StackCube, PickSingleYCB, PegInsertionSide), seeds 10--40, grounded and
+standard critics. Confirmation: new seed-50 robots with every rule fixed in advance
+(\code{docs/preregistration\_seed50.md}): all criteria passed (ours 0.81 vs best rival 0.73). Second benchmark: the
+released TD-MPC2 multi-task models on all 30 DeepMind Control tasks (\code{src/dmc\_audit.py}).
+
+%==================================================================================================================
+\section{Run time}\label{sec:runtime}
+%==================================================================================================================
+
+At run time the detector needs only the trained world model, the bias $b$ and the trees $f$: Algorithm~\ref{alg:detect}
+on any candidate action sequence. No simulator, no real future and no rewards are used.
+
+For many candidates at once (e.g.\ all 512 MPPI candidates per planning iteration), \code{src/planning/gpu\_audit.py}
+evaluates the same trees exactly on the GPU; every job checks the GPU copy against scikit-learn before use (maximum
+difference $0.0$). Uses of the detector beyond detection (planning, training, shift monitoring, policy evaluation,
+per-signal audits) were tested separately; their designs and results are in \code{docs/preregistration\_*.md}.
+
+%==================================================================================================================
+\appendix
+\section{Extensions (October 2026)}
+%==================================================================================================================
+
+\subsection{Compounding error along long rollouts (\code{src/tools/compounding.py}, \code{dmc\_compounding.py})}
+
+Rollouts of $H=24$ and $40$ steps, same labels. For each signal $s$ and robot, the mean signal on hallucinated
+windows at step $k$ is $\bar s_k=\operatorname{mean}\{s_k: y_k=1\}$, and its growth from the first to the last 3 steps is
+\[
+G_s=\frac{\frac13\sum_{k\in\text{last 3}}\bar s_k}{\frac13\sum_{k\in\text{first 3}}\bar s_k},
+\qquad\text{compared with the growth of the true error }\ G_E=\frac{\operatorname{mean}_{\text{last 3}}E_k}{\operatorname{mean}_{\text{first 3}}E_k}.
+\]
+We report the mean of $G_s$ over robots (or tasks) with a 95\% bootstrap interval over robots (2000 resamples), the
+number of robots with $G_s>1$, and how often $G_{\text{ours}}>G_{\text{ensemble}}$. Per-step stratified AUROC
+measures ranking separately from loudness.
+
+\begin{inwords}
+As the robot imagines further, its errors pile up (in our data 18 to 112 times larger at the end than at the
+start). A good alarm should get louder as the error grows. $G_s$ measures how much louder each alarm gets.
+\end{inwords}
+
+\subsection{Trajectory-level ensembles and shared bias (\code{signals.py::member\_rollouts})}\label{app:traj}
+
+Each dynamics head imagines the whole rollout on its own (PETS-style trajectory sampling):
+$\hat z^{(m)}_0=\hat z_0$, $\hat z^{(m)}_{k+1}=d^{(m)}_\theta(\hat z^{(m)}_k,a_k)$, $m=0..4$.
+\begin{align*}
+\text{Dt}_k&=\tfrac1d\textstyle\sum_{\text{dims}}\sd_m\,\hat z^{(m)}_{k+1} &&\text{(spread of the imagined states)}\\
+G^{(m)}_k&=\textstyle\sum_{j\le k}\gamma^j R_\theta(\hat z^{(m)}_j,a_j)+\gamma^{k+1}V_\theta(\hat z^{(m)}_{k+1}),\qquad
+\text{Mt}_k=\sd_m\,G^{(m)}_k &&\text{(STEVE-style spread of the heads' own returns)}
+\end{align*}
+\textbf{Shared-bias diagnostic} (\code{run\_preflight.py::shared\_bias}): with member errors
+$e^{(m)}_k=\hat z^{(m)}_{k+1}-h_\theta(o_{k+1})$ and their mean $\bar e_k$, we log the error of the ensemble mean
+$\|\bar e_k\|$, the mean member error, the spread, and the same at the level of reward sums.
+
+\subsection{Why the anchored check must grow, and when ensembles cannot see an error}
+
+Let $G_k(x)=\sum_{j\le k}\gamma^jR_\theta(x_j,a_j)+\gamma^{k+1}V_\theta(x_{k+1})$ along a latent path $x$; then
+$\text{Aa}_k=\abs{\Qbar(\hat z_0,a_0)-G_k(\hat z)}$.
+
+\begin{proposition}[Anchored residual $=$ imagination error $\pm$ a dynamics-free floor]
+Define the imagination error in value units $I_k=G_k(\hat z)-G_k(z)$ (zero if the imagined latents equal the real
+encoded ones $z_j=h_\theta(o_j)$) and the critic floor $C_k=\Qbar(\hat z_0,a_0)-G_k(z)$, which does not involve the
+dynamics at all. Then $\Qbar(\hat z_0,a_0)-G_k(\hat z)=C_k-I_k$ exactly, hence
+\[
+\bigl|\,|I_k|-|C_k|\,\bigr|\ \le\ \text{Aa}_k\ \le\ |I_k|+|C_k|.
+\]
+\end{proposition}
+\noindent So once the value-relevant drift $|I_k|$ exceeds the floor, Aa must grow with it. A grounded critic keeps
+$|C_k|$ small. $|C_k|$ is largest where the value changes sharply (contacts, value cliffs), which is where false
+alarms concentrate.
+
+\begin{proposition}[Ensemble spread cannot see shared error]
+For $K$ members with errors $e^{(m)}$ and mean $\bar e$:
+$\ \frac1K\sum_m\|e^{(m)}\|^2=\|\bar e\|^2+\frac1K\sum_m\|e^{(m)}-\bar e\|^2$.
+Any alarm that depends only on disagreement is unchanged if all members shift by the same offset.
+\end{proposition}
+\noindent Whether shared error dominates in practice is measured by the shared-bias diagnostic above. On 15 robots at
+24 and 40 imagined steps it does not: the spread grows faster than the error of the ensemble mean (error/spread falls
+on 15/15 robots), and Dt and Mt grow with the error. So the proposition describes a possible failure, not the
+observed one; only one-step ensemble alarms (D, M) stay flat.
+
+\subsection{Hallucination-aware value expansion (\code{src/training/value\_expansion.py})}
+
+For a real transition with reward $r$ and real next latent $z'$, imagine $h$ steps with the policy:
+$\hat z_0=z'$, $\hat z_{k+1}=d_\theta(\hat z_k,\pi(\hat z_k))$, $\hat r_k=R_\theta(\hat z_k,\pi(\hat z_k))$. The $j$-step
+targets are
+\[
+G_j=r+\gamma\Bigl(\sum_{k<j}\gamma^k\hat r_k+\gamma^j\,Q_{\bar\theta}\bigl(\hat z_j,\pi(\hat z_j)\bigr)\Bigr),\qquad j=0..h,
+\]
+($G_0$ is the standard TD-MPC2 target). Each imagined step $k$ gets a trust $t_k\in[0,1]$; imagination is cut at
+the first untrusted step, and the critic's target is the expected return under that cut:
+\[
+T_0=1,\quad T_j=\prod_{k<j}t_k,\qquad
+G=\sum_{j<h}T_j(1-t_j)\,G_j+T_h\,G_h .
+\]
+Trust: \emph{none} uses $G_0$; \emph{fixed} $t\equiv1$ (uses $G_h$); \emph{const} $t\equiv0.5$; \emph{D} and \emph{lba}
+map a raw score (ensemble disagreement, or our audit's probability) through the same per-step empirical CDF over
+recent scores, $t_k=1-\widehat{F}_k(\text{score}_k)$, so both have the same average trust and differ only in
+\emph{where} they trust.
+
+\begin{inwords}
+Instead of learning only from the next real step, the critic also learns from a few imagined steps ahead, which is
+faster. But each imagined step is trusted only as much as the detector allows: a suspicious step cuts the
+imagination short. The pilot showed that trusting imagination fully is a disaster (final success 0.22), while
+careful trust helps; the full study (55 runs, pre-registered) is running.
+\end{inwords}
+
+\end{document}

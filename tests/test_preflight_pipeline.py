@@ -34,7 +34,7 @@ def test_evaluate_model_runs_and_reports_all_tests(tmp_path, monkeypatch):
 	for name, aux in [("grounded", 4), ("stock", 0)]:
 		report[name] = rp.evaluate_model(_mock_agent(aux), _data(), H=5, beta=1.0, dump_path=tmp_path / f"features_{name}.pt")
 	g = report["grounded"]
-	assert set(g["results"]) - {"LBA", "LBA_lin", "LENS", "LALL"} == {"A", "B", "E", "D", "M", "C", "Ao", "P", "At", "Aa", "Ac", "A+Aa", "A+Ac", "A2", "A3", "A5", "A8", "A+A2", "A+A3", "A+A5", "A+A8", "Ab", "Acb", "Ab+Acb", "A+Aa+P", "A+A5+P"}
+	assert set(g["results"]) - {"LBA", "LBA_lin", "LENS", "LALL"} == {"A", "B", "E", "D", "M", "Dt", "Mt", "C", "Ao", "P", "At", "Aa", "Ac", "A+Aa", "A+Ac", "A2", "A3", "A5", "A8", "A+A2", "A+A3", "A+A5", "A+A8", "Ab", "Acb", "Ab+Acb", "A+Aa+P", "A+A5+P"}
 	assert set(report["stock"]["results"]) - {"LBA", "LBA_lin"} == {"A", "B", "E", "C", "Ao", "P", "At", "Aa", "Ac", "A+Aa", "A+Ac", "A2", "A3", "A5", "A8", "A+A2", "A+A3", "A+A5", "A+A8", "Ab", "Acb", "Ab+Acb", "A+Aa+P", "A+A5+P"}
 	assert 0 <= g["type2_effective_fraction"] <= 1 and "type4_value_cum" in g["results"]["A"]
 	assert {"gradual", "gradual_cum", "sudden_natural", "increment"} <= set(g["results"]["A3"])
@@ -67,3 +67,31 @@ def test_evaluate_model_runs_and_reports_all_tests(tmp_path, monkeypatch):
 	rp.write_report(tmp_path, report)
 	text = (tmp_path / "report.md").read_text()
 	assert "Primary gate" in text and "Original gate" in text and "| A |" in text and "Value diagnostics" in text
+
+
+def test_trajectory_ensembles_and_shared_bias(tmp_path, monkeypatch):
+	"""Head 0 rolled out alone reproduces the main rollout; Dt, Mt and the shared-bias dump have the documented shapes."""
+	from src.auditor.signals import member_rollouts
+	agent, H, N = _mock_agent(4), 5, 7
+	z0, acts = torch.softmax(torch.randn(N, 16), -1), torch.rand(H, N, 3) * 2 - 1
+	sig, roll = rp.plan_signals(agent, z0, acts, 1.0)
+	trajs = member_rollouts(agent.aux_dynamics_heads(), z0, acts)
+	assert trajs.shape == (5, H + 1, N, 16) and torch.allclose(trajs[0], roll.z)
+	assert sig["Dt"].shape == sig["Mt"].shape == (H, N) and (sig["Dt"] > 0).all()
+	monkeypatch.setitem(rp.CAL, "min_clean_samples", 5)
+	rp.evaluate_model(agent, _data(), H=H, beta=1.0, dump_path=tmp_path / "f.pt")
+	sb = torch.load(tmp_path / "f.pt", weights_only=False)["ev"]["shared_bias"]
+	M = torch.load(tmp_path / "f.pt", weights_only=False)["ev"]["E"].shape[1]
+	assert sb["lat_mean_err"].shape == sb["lat_spread"].shape == (H, M) and sb["ret_mean_err"].shape == (H - 1, M)
+	assert (sb["lat_member_err"] >= sb["lat_mean_err"] - 1e-5).all()   # triangle inequality: mean of errors >= error of mean
+
+
+def test_critic_floor_reproduces_anchored_residual(tmp_path, monkeypatch):
+	"""Proposition 1 split in the dump: |C - I| equals the anchored residual Aa exactly."""
+	agent, H = _mock_agent(0), 5
+	monkeypatch.setitem(rp.CAL, "min_clean_samples", 5)
+	rp.evaluate_model(agent, _data(), H=H, beta=1.0, dump_path=tmp_path / "f.pt")
+	ev = torch.load(tmp_path / "f.pt", weights_only=False)["ev"]
+	fl = ev["floor"]
+	assert fl["C"].shape == fl["I"].shape == ev["signals"]["Aa"].shape
+	assert torch.allclose((fl["C"] - fl["I"]).abs(), ev["signals"]["Aa"], atol=1e-4)

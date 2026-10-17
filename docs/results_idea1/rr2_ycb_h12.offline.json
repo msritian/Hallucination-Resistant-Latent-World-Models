@@ -1,0 +1,18 @@
+{
+ "offline_regret_heldout": {
+  "imagined": 1.3482954491376877,
+  "corrected": 1.4455830891132355,
+  "relvalue": 1.3518838855028152,
+  "valuepred": 1.444773180961609,
+  "penD": 1.2871219638586044,
+  "penM": 1.2839403363466262,
+  "random": 1.3975060424804688
+ },
+ "lambda_fit_half": {
+  "penD": 100,
+  "penM": 0.3
+ },
+ "decisions": 1000,
+ "mean_overestimation": 2.285015821456909,
+ "mean_overestimation_of_imagined_best": 2.540867765694857
+}

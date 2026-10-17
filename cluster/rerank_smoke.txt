@@ -1,0 +1,2 @@
+smoke_rr_stack, StackCube-v1, bk_grounded_stackcube_s10, 1, 2
+smoke_rr_ycb, PickSingleYCB-v1, p4_grounded_ycb_s10, 1, 2

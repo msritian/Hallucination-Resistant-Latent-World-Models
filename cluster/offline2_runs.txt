@@ -1,0 +1,2 @@
+off2_stack, StackCube-v1, seed_stock_stack_s20, 5000, 200000, 1, --run stock_aux --eval_freq 20000 --eval_episodes 10 --final_eval_episodes 50
+off2_ycb, PickSingleYCB-v1, p4_stock_ycb_s10, 10000, 200000, 1, --run stock_aux --eval_freq 20000 --eval_episodes 10 --final_eval_episodes 50

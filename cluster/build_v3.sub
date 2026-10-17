@@ -1,0 +1,12 @@
+universe = vanilla
+executable = build_v3.sh
+log = logs/build_v3.log
+output = logs/build_v3.out
+error = logs/build_v3.err
++IsBuildJob = true
+requirements = (OpSysMajorVer =?= 9) && (HasCHTCStaging == true)
+transfer_input_files = tdmpc2_v3.def
+request_cpus = 4
+request_memory = 16GB
+request_disk = 40GB
+queue

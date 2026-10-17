@@ -1,0 +1,2 @@
+smoke_vep_lba_pick_h10, stock_aux, PickCube-v1, 1, 8000, --no_compile --max_hours 3 --eval_freq 2000 --eval_episodes 2 --final_eval_episodes 3 --video_freq 100000000 --ckpt_freq 100000 --mirror_dir none --ve_start 3000 --value_expansion lba --ve_h 10
+smoke_vep_D_stack_h10, stock_aux, StackCube-v1, 1, 8000, --no_compile --max_hours 3 --eval_freq 2000 --eval_episodes 2 --final_eval_episodes 3 --video_freq 100000000 --ckpt_freq 100000 --mirror_dir none --ve_start 3000 --value_expansion D --ve_h 10

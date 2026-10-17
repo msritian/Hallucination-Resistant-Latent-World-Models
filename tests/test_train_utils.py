@@ -32,3 +32,19 @@ def test_ablation_run_types():
 	from src.train import RUNS
 	assert RUNS["grounded_noaux"] == dict(grounded=True, num_aux_dynamics=0)
 	assert RUNS["stock_aux"] == dict(grounded=False, num_aux_dynamics=4)
+
+
+def test_snapshots_saved_once_per_requested_step(tmp_path):
+	from types import SimpleNamespace
+	import pytest
+	import torch
+	pytest.importorskip("torchrl")   # src.train imports TD-MPC2's buffer (container only)
+	from src.train import Trainer
+	t = SimpleNamespace(args=SimpleNamespace(snapshots="100,300"), out=tmp_path, step=0,
+	                    agent=SimpleNamespace(checkpoint_state=lambda: {"model": {"w": torch.ones(1)}}))
+	for step in (50, 120, 130, 400):
+		t.step = step
+		Trainer._save_snapshots(t)
+	assert sorted(p.name for p in tmp_path.iterdir()) == ["snap_100.pt", "snap_300.pt"]
+	t.args.snapshots = ""
+	Trainer._save_snapshots(t)   # no snapshots requested: nothing happens

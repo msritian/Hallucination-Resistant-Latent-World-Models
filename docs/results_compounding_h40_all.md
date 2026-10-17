@@ -1,0 +1,38 @@
+11 robots with ensembles. Mean true imagination error by step: 0.03 0.07 0.11 0.15 0.19 0.23 0.28 0.33 0.39 0.45 0.52 0.60 0.68 0.76 0.85 0.94 1.03 1.13 1.22 1.31 1.40 1.49 1.58 1.66 1.75 1.83 1.91 1.99 2.07 2.15 2.22 2.29 2.36 2.43 2.49 2.56 2.62 2.68 2.73
+
+AUROC per imagined step (1 = first imagined transition):
+signal k    1 k    2 k    3 k    4 k    5 k    6 k    7 k    8 k    9 k   10 k   11 k   12 k   13 k   14 k   15 k   16 k   17 k   18 k   19 k   20 k   21 k   22 k   23 k   24 k   25 k   26 k   27 k   28 k   29 k   30 k   31 k   32 k   33 k   34 k   35 k   36 k   37 k   38 k   39   first-3  last-3  change
+LBA      0.78   0.80   0.80   0.78   0.78   0.78   0.79   0.80   0.79   0.79   0.80   0.79   0.79   0.81   0.83   0.82   0.82   0.83   0.82   0.80   0.82   0.79   0.83   0.81   0.81   0.82   0.77   0.78   0.81   0.85   0.83   0.85   0.84   0.84   0.83   0.83   0.83   0.83   0.83   0.79       0.83     +0.04
+Aa       0.74   0.75   0.71   0.67   0.65   0.64   0.63   0.63   0.64   0.64   0.64   0.64   0.65   0.65   0.67   0.68   0.68   0.67   0.65   0.68   0.68   0.66   0.67   0.61   0.65   0.62   0.66   0.65   0.67   0.67   0.67   0.65   0.64   0.65   0.65   0.64   0.65   0.64   0.65   0.73       0.65     -0.09
+Ac       0.74   0.76   0.74   0.67   0.65   0.64   0.62   0.60   0.58   0.57   0.57   0.57   0.56   0.58   0.59   0.61   0.61   0.61   0.61   0.58   0.62   0.60   0.60   0.56   0.58   0.56   0.56   0.59   0.57   0.61   0.61   0.58   0.59   0.62   0.61   0.61   0.61   0.60   0.61   0.75       0.61     -0.14
+A        0.74   0.71   0.62   0.59   0.58   0.55   0.58   0.58   0.57   0.60   0.59   0.59   0.61   0.66   0.66   0.67   0.69   0.67   0.66   0.66   0.68   0.63   0.62   0.67   0.63   0.63   0.63   0.61   0.64   0.64   0.65   0.66   0.67   0.66   0.68   0.66   0.65   0.65   0.66   0.69       0.65     -0.04
+D        0.71   0.77   0.73   0.71   0.68   0.66   0.65   0.65   0.64   0.64   0.64   0.65   0.65   0.67   0.69   0.69   0.69   0.69   0.72   0.73   0.75   0.73   0.73   0.72   0.72   0.73   0.74   0.71   0.71   0.74   0.76   0.73   0.73   0.73   0.75   0.74   0.72   0.73   0.72   0.74       0.72     -0.01
+M        0.76   0.68   0.65   0.65   0.64   0.62   0.63   0.63   0.64   0.63   0.63   0.64   0.64   0.65   0.68   0.68   0.69   0.67   0.67   0.65   0.69   0.64   0.66   0.65   0.65   0.63   0.64   0.65   0.67   0.67   0.69   0.69   0.68   0.70   0.71   0.71   0.70   0.70   0.70   0.70       0.70     +0.00
+B        0.59   0.52   0.50   0.52   0.53   0.54   0.56   0.58   0.60   0.60   0.60   0.62   0.63   0.63   0.67   0.68   0.69   0.66   0.67   0.65   0.67   0.64   0.66   0.61   0.64   0.63   0.64   0.65   0.66   0.64   0.69   0.67   0.67   0.70   0.71   0.70   0.68   0.68   0.68   0.54       0.68     +0.14
+
+Growth from the first 3 to the last 3 imagined steps, on hallucinated windows: signal ratio vs error ratio
+  LBA    signal x6.65   (true error x38.47)
+  Aa     signal x1.87   (true error x38.47)
+  Ac     signal x2.34   (true error x38.47)
+  A      signal x0.32   (true error x38.47)
+  D      signal x0.79   (true error x38.47)
+  M      signal x0.35   (true error x38.47)
+  B      signal x0.88   (true error x38.47)
+
+Per-robot growth ratio (first 3 -> last 3 steps, hallucinated windows): mean [95% CI over robots]
+  LBA    x14.61 [6.04, 25.72]   grows (>1) on 11/11 robots
+  Aa     x2.73 [1.49, 4.50]   grows (>1) on 8/11 robots
+  Ac     x2.91 [2.00, 4.04]   grows (>1) on 11/11 robots
+  A      x0.51 [0.28, 0.76]   grows (>1) on 1/11 robots
+  D      x0.87 [0.68, 1.06]   grows (>1) on 4/11 robots
+  M      x0.70 [0.29, 1.15]   grows (>1) on 2/11 robots
+  B      x1.31 [0.75, 2.02]   grows (>1) on 4/11 robots
+  Aa grows more than D on 11/11 robots
+  Ac grows more than D on 11/11 robots
+  LBA grows more than D on 11/11 robots
+  Aa grows more than M on 11/11 robots
+  Ac grows more than M on 11/11 robots
+  LBA grows more than M on 11/11 robots
+  Aa grows more than B on 9/11 robots
+  Ac grows more than B on 10/11 robots
+  LBA grows more than B on 11/11 robots

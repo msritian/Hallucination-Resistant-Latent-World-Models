@@ -1,0 +1,1 @@
+smoke_dmc, task=mt30 model_size=48 checkpoint=/staging/s/smittal39/tdmpc2_pre/ckpt/mt30-48M.pt +episodes=4 +tasks_subset=walker-walk+cartpole-swingup

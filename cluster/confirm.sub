@@ -2,7 +2,7 @@
 # Usage:  condor_submit confirm.sub queue_file=realcheck_s50.txt
 # Output: results/real_<grounded>.tar.gz (contains features_<model>.pt for the offline analyses)
 universe = container
-container_image = file:///staging/s/smittal39/tdmpc2_v2.sif
+container_image = file:///staging/s/smittal39/tdmpc2_v3.sif
 
 executable = preflight.sh
 arguments = $(task) $(grounded) $(stock) --dump_features
@@ -21,7 +21,7 @@ error = logs/real_$(grounded).$(Cluster).err
 requirements = (HasCHTCStaging == true)
 request_gpus = 1
 gpus_minimum_capability = 7.0
-gpus_maximum_capability = 9.0
+gpus_maximum_capability = 12.0
 +WantGPULab = true
 +GPUJobLength = "short"
 request_cpus = 4
