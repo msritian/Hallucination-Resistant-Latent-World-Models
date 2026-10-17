@@ -26,7 +26,8 @@ log = logs/$(name).log
 output = logs/$(name).$(Cluster).$(Process).out
 error = logs/$(name).$(Cluster).$(Process).err
 
-requirements = (TARGET.PoolName =?= "CHTC")
+# gpu117.cm.cluster lacks libGL: jobs crash at import there.
+requirements = (TARGET.PoolName =?= "CHTC") && (TARGET.Machine =!= "gpu117.cm.cluster")
 
 request_gpus = 1
 gpus_minimum_capability = 7.0
