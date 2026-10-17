@@ -84,3 +84,14 @@ def test_trajectory_ensembles_and_shared_bias(tmp_path, monkeypatch):
 	M = torch.load(tmp_path / "f.pt", weights_only=False)["ev"]["E"].shape[1]
 	assert sb["lat_mean_err"].shape == sb["lat_spread"].shape == (H, M) and sb["ret_mean_err"].shape == (H - 1, M)
 	assert (sb["lat_member_err"] >= sb["lat_mean_err"] - 1e-5).all()   # triangle inequality: mean of errors >= error of mean
+
+
+def test_critic_floor_reproduces_anchored_residual(tmp_path, monkeypatch):
+	"""Proposition 1 split in the dump: |C - I| equals the anchored residual Aa exactly."""
+	agent, H = _mock_agent(0), 5
+	monkeypatch.setitem(rp.CAL, "min_clean_samples", 5)
+	rp.evaluate_model(agent, _data(), H=H, beta=1.0, dump_path=tmp_path / "f.pt")
+	ev = torch.load(tmp_path / "f.pt", weights_only=False)["ev"]
+	fl = ev["floor"]
+	assert fl["C"].shape == fl["I"].shape == ev["signals"]["Aa"].shape
+	assert torch.allclose((fl["C"] - fl["I"]).abs(), ev["signals"]["Aa"], atol=1e-4)

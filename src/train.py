@@ -72,6 +72,7 @@ def parse_args(argv=None):
 	p.add_argument("--eval_seed_start", type=int, default=1000)
 	p.add_argument("--video_freq", type=int, default=100_000, help="save an eval video at least this often (and at the end)")
 	p.add_argument("--ckpt_freq", type=int, default=25_000)
+	p.add_argument("--snapshots", default="", help="comma-separated steps at which to keep a copy of the model (snap_<step>.pt)")
 	p.add_argument("--max_hours", type=float, default=10.0, help="checkpoint and exit 85 after this much wall time")
 	p.add_argument("--stop_after_steps", type=int, default=None, help="debug: checkpoint and exit 85 at this step")
 	p.add_argument("--no_compile", action="store_true")
@@ -281,6 +282,14 @@ class Trainer:
 		self._push_mirror()
 		print(f"Checkpoint saved at step {self.step:,}")
 
+	def _save_snapshots(self):
+		"""Keep a copy of the model at each requested step (training-maturity study); survives restarts via ./run."""
+		for s_ in (int(x) for x in self.args.snapshots.split(",") if x.strip()):
+			path = self.out / f"snap_{s_}.pt"
+			if self.step >= s_ and not path.exists():
+				torch.save(self.agent.checkpoint_state()["model"], path)
+				print(f"Snapshot saved at step {self.step:,} (requested {s_:,})", flush=True)
+
 	def elapsed(self):
 		return self.elapsed_before + time.time() - self.job_start
 
@@ -380,6 +389,7 @@ class Trainer:
 					if record:
 						self.next_video += args.video_freq
 
+				self._save_snapshots()
 				if self.step >= self.next_ckpt:
 					self.save_checkpoint()
 					self.next_ckpt += args.ckpt_freq

@@ -1,0 +1,1 @@
+mat_smoke_push, grounded, PushCube-v1, 99, 3000, --max_hours 1 --eval_freq 1000 --video_freq 100000000 --ckpt_freq 1000 --final_eval_episodes 3 --compile_mode default --snapshots 1500,2500

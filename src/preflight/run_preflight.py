@@ -179,6 +179,25 @@ def shared_bias(agent, z_real, actions, r_true, chunk: int = 1024) -> dict:
 	return {k: torch.cat(v, 1).cpu() for k, v in out.items()}
 
 
+@torch.no_grad()
+def critic_floor(agent, z_real, actions, roll, chunk: int = 1024) -> dict:
+	"""Proposition 1 split of the anchored residual, per step t and window: Q(z_0,a_0) - G_t(z_hat) = C_t - I_t with
+	G_t(x) = sum_{k<=t} g^k R(x_k,a_k) + g^{t+1} V(x_{t+1}). C (critic floor) uses the REAL encoded path only; I is the
+	imagination error in value units. [H, M] each."""
+	model, cfg, g = agent.model, agent.cfg, float(agent.discount)
+	H = actions.shape[0]
+	disc = g ** torch.arange(H + 1, device=actions.device, dtype=torch.float32).view(-1, 1)
+	G_imag = torch.cumsum(disc[:H] * roll.r_hat.squeeze(-1), 0) + disc[1:] * roll.v_mean[1:].squeeze(-1)
+	q0 = roll.q_sa[0].squeeze(-1)
+	G_real = []
+	for s in range(0, actions.shape[1], chunk):
+		zr, a = z_real[:, s:s + chunk], actions[:, s:s + chunk]
+		r = decode(model.reward(zr[:-1], a, None), cfg).squeeze(-1)
+		G_real.append(torch.cumsum(disc[:H] * r, 0) + disc[1:] * value_fn(agent, zr[1:]))
+	G_real = torch.cat(G_real, 1)
+	return dict(C=(q0 - G_real).cpu(), I=(G_imag - G_real).cpu())
+
+
 def value_fn(agent, z):
 	"""V(z) = mean-head Q(z, mu_pi(z)); shape [...]."""
 	return q_heads(agent.model, z, pi_mean(agent.model, z), agent.cfg).mean(0).squeeze(-1)
@@ -354,7 +373,7 @@ def evaluate_model(agent, data, H: int, beta: float, dump_path=None) -> dict:
 			eps_of = lambda eps: torch.tensor([e for e in eps for _ in range(T - H + 1)])
 			pack = lambda sig, roll: dict(signals={k: v.detach().cpu() for k, v in sig.items()},
 			                              v_hat=roll.v_mean[1:].squeeze(-1).cpu(), r_hat=roll.r_hat.squeeze(-1).cpu())
-			ev_extra = {}
+			ev_extra = {"floor": critic_floor(agent, z_real, a.to(dev), roll_clean)}
 			if getattr(agent, "num_aux_dynamics", 0) > 0:
 				ev_extra["shared_bias"] = shared_bias(agent, z_real, a.to(dev), reward_windows(data, H, ev_eps).to(dev))
 			torch.save(dict(cal=dict(**pack(sig_cal, roll_cal), E=E_cal, episode=eps_of(cal_eps), start=starts(cal_eps)),
