@@ -1,0 +1,1 @@
+comsmoke_seed_grounded_stack_s40, StackCube-v1, seed_grounded_stack_s40, 2, 2
