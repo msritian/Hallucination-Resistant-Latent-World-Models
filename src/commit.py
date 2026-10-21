@@ -42,6 +42,9 @@ K_MAX = 8
 BUDGETS = (2, 4)                                          # target mean actions per plan for the gates
 SCORES = ("LBA", "Aa", "D", "M")                          # before-acting gates from the plan's per-step scores
 GATES = ("oracle", *SCORES, "PE", "random")
+STEP = 0.05
+LEVELS = [1 + STEP * i for i in range(int((K_MAX - 1) / STEP) + 1)]   # commitment levels 1.00 ... 8.00
+ETA = 0.05                                               # gain of the budget controller
 
 
 @dataclass(frozen=True)
@@ -168,32 +171,53 @@ def expected_k(c: torch.Tensor, thr: float, tie: float) -> float:
 	return float(1 + torch.cumprod(p, 1).sum(1).mean())
 
 
-def thresholds_from(cal: dict) -> dict:
-	"""{gate: {budget: {thr, tie}}} so that each gate's mean commitment on the calibration plans equals the budget.
+def match(c: torch.Tensor, b: float) -> dict:
+	"""{thr, tie} with expected_k(c, thr, tie) = b: the smallest observed score at which trusting ties reaches b, then
+	the tie probability by bisection (exact even when scores repeat, e.g. probabilities saturated at 1.0)."""
+	vals = torch.unique(c)
+	lo, hi = 0, len(vals) - 1
+	while lo < hi:
+		mid = (lo + hi) // 2
+		if expected_k(c, float(vals[mid]), 1.0) >= b:
+			hi = mid
+		else:
+			lo = mid + 1
+	thr = float(vals[lo])
+	t_lo, t_hi = 0.0, 1.0
+	for _ in range(40):
+		t = (t_lo + t_hi) / 2
+		t_lo, t_hi = (t, t_hi) if expected_k(c, thr, t) < b else (t_lo, t)
+	return dict(thr=thr, tie=(t_lo + t_hi) / 2)
 
-	The threshold is the smallest observed score at which trusting ties reaches the budget; the tie probability is
-	then set by bisection, so the match is exact even when scores repeat (e.g. probabilities saturated at 1.0)."""
+
+def thresholds_from(cal: dict) -> dict:
+	"""{gate: {level: {thr, tie}}}: for every level on LEVELS, the threshold whose mean commitment on the calibration
+	plans equals that level. Run time starts each gate at its budget and moves along these levels (BudgetControl)."""
 	scores = dict(cal["steps"], oracle=cal["E"], PE=cal["PE"])
-	out = {}
-	for g, s in scores.items():
-		c = torch.cummax(s[:, :K_MAX - 1].float(), 1).values
-		vals = torch.unique(c)
-		out[g] = {}
-		for b in BUDGETS:
-			lo, hi = 0, len(vals) - 1          # smallest index with expected_k(vals[i], tie=1) >= b
-			while lo < hi:
-				mid = (lo + hi) // 2
-				if expected_k(c, float(vals[mid]), 1.0) >= b:
-					hi = mid
-				else:
-					lo = mid + 1
-			thr = float(vals[lo])
-			t_lo, t_hi = 0.0, 1.0
-			for _ in range(40):
-				t = (t_lo + t_hi) / 2
-				t_lo, t_hi = (t, t_hi) if expected_k(c, thr, t) < b else (t_lo, t)
-			out[g][str(b)] = dict(thr=thr, tie=(t_lo + t_hi) / 2)
-	return out
+	return {g: {key(b): match(torch.cummax(s[:, :K_MAX - 1].float(), 1).values, b) for b in LEVELS}
+	        for g, s in scores.items()}
+
+
+def key(level: float) -> str:
+	return f"{min(max(round(level / STEP) * STEP, 1.0), float(K_MAX)):.2f}"
+
+
+class BudgetControl:
+	"""Integral controller that keeps a gate's mean commitment at its budget at run time (amendment 1).
+
+	Calibration thresholds do not transfer exactly: score levels shift between episodes, so a fixed threshold can
+	commit to far fewer or more actions than the budget, and gates would no longer use the same planning compute.
+	Each gate therefore uses the calibration threshold of level = budget + ETA * sum(budget - k) over its decisions so
+	far (across episodes of the arm), which drives the running mean of k to the budget. Same rule for every gate."""
+
+	def __init__(self, budget: float):
+		self.budget, self.err = float(budget), 0.0
+
+	def level(self) -> str:
+		return key(self.budget + ETA * self.err)
+
+	def update(self, k: int):
+		self.err += self.budget - k
 
 
 # ------------------------------------------------------------------------------------------------ episodes
@@ -205,7 +229,7 @@ def run_arm(agent, env, sim, arm: Arm, lba: dict, th: dict, episodes: int, seed_
 	gen = torch.Generator().manual_seed(seed)
 	discount = float(agent.discount)
 	q = random_q(arm.budget) if arm.gate == "random" else None
-	pe_th = th["PE"][str(arm.budget)] if arm.gate == "PE" or arm.abort else None
+	ctrl = BudgetControl(arm.budget) if arm.gate not in (None, "random") else None
 	rows, rec = [], dict(ep=[], t=[], k=[])
 	for i in range(episodes):
 		obs, done, t, ep_reward, calls, j = env.reset(seed=seed_start + i), False, 0, 0.0, 0, 0
@@ -215,7 +239,7 @@ def run_arm(agent, env, sim, arm: Arm, lba: dict, th: dict, episodes: int, seed_
 			planner.act(obs, t0=calls == 0)
 			plan = planner.last_plan.detach().cpu().clamp(-1, 1)
 			calls += 1
-			roll = None
+			roll, pe_th = None, None
 			if arm.gate is None:
 				k = arm.k
 			elif arm.gate == "random":
@@ -225,13 +249,16 @@ def run_arm(agent, env, sim, arm: Arm, lba: dict, th: dict, episodes: int, seed_
 			elif arm.gate == "PE":
 				k = K_MAX
 				_, roll = score_plan(agent, obs, plan, lba)
+				pe_th = th["PE"][ctrl.level()]
 			elif arm.gate == "oracle":
 				steps, roll = score_plan(agent, obs, plan, lba)
 				r_true, _ = sim.rollout(sim.save(), plan.view(plan.shape[0], 1, -1))
-				k = commit_len(plan_error(roll, r_true[:, 0], discount), th["oracle"][str(arm.budget)], gen)
+				k = commit_len(plan_error(roll, r_true[:, 0], discount), th["oracle"][ctrl.level()], gen)
 			else:
 				steps, roll = score_plan(agent, obs, plan, lba)
-				k = commit_len(steps[arm.gate], th[arm.gate][str(arm.budget)], gen)
+				k = commit_len(steps[arm.gate], th[arm.gate][ctrl.level()], gen)
+				if arm.abort:
+					pe_th = th["PE"][key(arm.budget)]
 			rec["ep"].append(i)
 			rec["t"].append(t)
 			j = 0
@@ -243,6 +270,8 @@ def run_arm(agent, env, sim, arm: Arm, lba: dict, th: dict, episodes: int, seed_
 				if pe_th is not None and not passes(latent_error(agent, obs, roll.z[j, 0]), pe_th, gen):
 					break
 			rec["k"].append(j)
+			if ctrl is not None and not done:     # a plan cut short by the episode's end says nothing about the gate
+				ctrl.update(j)
 		rows.append(dict(arm=arm.name, episode=i, seed=seed_start + i, success=float(info["success"]), reward=ep_reward,
 		                 steps=t, plan_calls=calls, mean_k=t / calls, seconds=time.perf_counter() - start))
 	return rows, {k: torch.tensor(v) for k, v in rec.items()}

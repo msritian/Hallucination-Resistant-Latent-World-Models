@@ -60,3 +60,17 @@ each gate score's accuracy (step-stratified AUROC) on the calibration plans; ach
 A smoke job (1 robot, 2 episodes per arm) checks the pipeline first. Its numbers are not used. The pre-registration
 may be amended only before the full jobs start, and only for problems found by the smoke job; amendments are
 committed with a reason.
+
+## Amendment 1 (2026-10-20, after the smoke job, before the full jobs)
+
+**Problem found by the smoke job:** thresholds that match the budget exactly on the calibration plans did not transfer
+to the evaluation episodes. Score levels shift between episodes, so at budget 4 the gates committed to 1.0 (D) to 2.2
+(PE) actions per plan, while random committed to 4.6. Gates would then differ in planning compute, and a gate could
+win just by replanning more often, which breaks the matched-compute design.
+
+**Change:** a budget controller, the same for every score-based gate (oracle, LBA, Aa, D, M, PE, and the LBA in
+LBA+PE). The calibration plans give a threshold for every commitment level 1.00, 1.05, …, 8.00. At run time a gate
+uses the threshold of level = budget + 0.05 × Σ(budget − k) over its decisions so far in the arm. This integral
+control drives the gate's running mean commitment to the budget. Plans cut short by the episode's end are not
+counted. Fixed-k and random arms are unchanged (random already has the budget as its expected commitment). The claims,
+arms, robots, seeds and statistics are unchanged. Smoke numbers are not used.
