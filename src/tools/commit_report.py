@@ -36,8 +36,8 @@ def load(paths) -> dict:
 				tf.extractall(root)
 		com = next(d for d in [root, *root.rglob("*")] if d.is_dir() and (d / "arms").is_dir())
 		name = p.name.replace(".tar.gz", "").replace("com_", "")
-		cal = com / "calibration.pt"
-		out[name] = dict(arms={f.stem: torch.load(f, weights_only=False) for f in sorted((com / "arms").glob("*.pt"))},
+		cal, cx = com / "calibration.pt", com / "calibration_extra.pt"
+		out[name] = dict(cal_extra=torch.load(cx, weights_only=False) if cx.exists() else None,arms={f.stem: torch.load(f, weights_only=False) for f in sorted((com / "arms").glob("*.pt"))},
 		                 lba=json.loads((com / "lba.json").read_text()),
 		                 cal=torch.load(cal, weights_only=False) if cal.exists() else None)
 	return out
@@ -77,11 +77,11 @@ def actions_per_plan(robot: dict, arm: str) -> float:
 	return sum(r["steps"] for r in rows) / sum(r["plan_calls"] for r in rows)
 
 
-def accuracy(robot: dict, target: str = "return") -> dict:
+def accuracy(robot: dict, target: str = "return", cal_key: str = "cal") -> dict:
 	"""Step-stratified AUROC of each before-acting score on the calibration plans (first K_MAX-1 steps).
 
 	target "return": real return-error labels (as in detection); "decision": act oracle top quarter vs bottom half."""
-	cal = robot["cal"]
+	cal = robot[cal_key]
 	if cal is None or (target == "decision" and "act" not in cal):
 		return {}
 	if target == "return":
@@ -139,6 +139,8 @@ def main(paths):
 	print("\n(PE uses the real next state, so it is only available while acting, not before.)")
 	if confirm:
 		confirm_claims(robots)
+		if any("IR@2" in r["arms"] for r in robots.values()):
+			frontier_claims(robots, names)
 		return
 
 	print("\n## 3. Pre-registered claims\n")
@@ -205,6 +207,61 @@ def flip_claims(robots: dict):
 	for a, b in (("PD@4", "random@4"), ("IR@4", "DBA@4"), ("PD@4", "DBA@4"), ("IR@4", "Aa@4"), ("IR@4", "PE@4"),
 	             ("IR@4", "act@4"), ("PD@4", "act@4")):
 		print(f"- {a} − {b}: {fmt_ci(diff_ci(robots, a, b))}")
+
+
+def frontier_claims(robots: dict, names: list):
+	"""docs/preregistration_frontier.md: G1-G4, the success-vs-compute table and the new scores' accuracy."""
+	ok = lambda d: d["models"] > 0 and d["ci95"][0] > 0
+	verdict = lambda c: "passed" if c else "failed"
+	mean_succ = lambda a: [sum(success(robots[n], a).values()) / len(success(robots[n], a))
+	                       for n in names if a in robots[n]["arms"]]
+	print("\n## 6. Success against planning compute (frontier study)\n")
+	print("| Gate | budget 1 | budget 2 | budget 4 | budget 6 |")
+	print("| :-- | :-: | :-: | :-: | :-: |")
+	for g in ("fixed k", "random", "oracle", "act", "reg", "IR", "LBA", "PE"):
+		cells = []
+		for b in (1, 2, 4, 6):
+			a = f"k{b}" if g == "fixed k" or b == 1 else f"{g}@{b}"
+			v = mean_succ(a)
+			cells.append(f"{sum(v) / len(v):.3f}" if v else "–")
+		print(f"| {g} | " + " | ".join(cells) + " |")
+	print("\n(budget 1 = replanning after every action, k1, for every row; budget = mean executed actions per plan.)")
+
+	print("\n## 7. Pre-registered claims (frontier)\n")
+	g1 = {b: diff_ci(robots, f"IR@{b}", f"random@{b}") for b in (2, 6)}
+	print("- **G1** " + "; ".join(f"IR@{b} − random@{b} = {fmt_ci(v)}" for b, v in g1.items()) +
+	      f" → {verdict(all(ok(v) for v in g1.values()))}")
+	g2 = {b: diff_ci(robots, f"IR@{b}", f"k{b}") for b in (2, 6)}
+	print("- **G2** " + "; ".join(f"IR@{b} − k{b} = {fmt_ci(v)}" for b, v in g2.items()) +
+	      f" → {verdict(all(ok(v) for v in g2.values()))}")
+	for tag, x in (("G3a", "FI"), ("G3b", "RS")):
+		d = diff_ci(robots, "IR@4", f"{x}@4")
+		print(f"- **{tag}** IR@4 − {x}@4 = {fmt_ci(d)} → {verdict(ok(d))}")
+	g4 = diff_ci(robots, "IR1@4", "random@4")
+	print(f"- **G4** IR1@4 − random@4 = {fmt_ci(g4)} → {verdict(ok(g4))}")
+
+	print("\nReported, not claimed:\n")
+	pairs = [(f"{g}@{b}", f"random@{b}") for b in (2, 6) for g in ("act", "reg", "oracle", "LBA", "PE")]
+	pairs += [(f"{g}@{b}", f"k{b}") for b in (2, 6) for g in ("act", "reg", "oracle", "LBA", "PE", "random")]
+	pairs += [(f"IR@{b}", f"{x}@{b}") for b in (2, 6) for x in ("act", "LBA")]
+	pairs += [("IR@4", "IR1@4"), ("FI@4", "random@4"), ("RS@4", "random@4"), ("IR@4", "k4"), ("k1", "k2"), ("k1", "k6"),
+	          ("IR@2", "k1")]
+	for a, b in pairs:
+		print(f"- {a} − {b}: {fmt_ci(diff_ci(robots, a, b))}")
+
+	acc = {n: accuracy(r, "return", "cal_extra") for n, r in robots.items()}
+	keys = [k for k in ("IR", "IR1", "FI", "RS", "LBA") if any(k in a for a in acc.values())]
+	if keys:
+		print("\nAccuracy of the new scores on real return errors (frontier calibration plans, steps 1-7, AUROC):\n")
+		print("| Robot | " + " | ".join(keys) + " |")
+		print("| :-- | " + " | ".join(":-:" for _ in keys) + " |")
+		for n in names:
+			print(f"| {n} | " + " | ".join(f"{acc[n][k]:.3f}" if k in acc[n] else "–" for k in keys) + " |")
+		means = {k: [acc[n][k] for n in names if k in acc[n] and acc[n][k] == acc[n][k]] for k in keys}
+		print("| **Mean** | " + " | ".join(f"**{sum(v) / len(v):.3f}**" if v else "–" for v in means.values()) + " |")
+	print("\nActions per plan: " + ", ".join(
+		f"{a} {sum(actions_per_plan(robots[n], a) for n in names if a in robots[n]['arms']) / max(1, sum(a in robots[n]['arms'] for n in names)):.2f}"
+		for a in ("k2", "random@2", "IR@2", "act@2", "k6", "random@6", "IR@6", "act@6", "IR1@4", "FI@4", "RS@4")))
 
 
 if __name__ == "__main__":
