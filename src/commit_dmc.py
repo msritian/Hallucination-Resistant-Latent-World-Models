@@ -61,8 +61,8 @@ class DMCSim:
 		while not hasattr(timeout, "_max_episode_steps"):
 			timeout = timeout.env
 		ctrl = timeout.env.env                   # DMControlWrapper.env = action_scale wrapper
-		while not hasattr(ctrl, "_step_count") and hasattr(ctrl, "_env"):
-			ctrl = ctrl._env
+		while "_env" in vars(ctrl):              # unwrap fully: wrappers delegate reads (__getattr__) but not writes
+			ctrl = vars(ctrl)["_env"]
 		return timeout, ctrl
 
 	def reseed(self, seed: int):
