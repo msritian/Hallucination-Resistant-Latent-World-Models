@@ -36,13 +36,16 @@ from typing import Optional
 import torch
 
 from src.monitor import H_LONG, plan_error
-from src.auditor.signals import member_rollouts, pi_mean, q_heads
+from src.auditor.signals import decode, member_rollouts, pi_mean, q_heads
 from src.preflight.run_preflight import CRITIC_FEATURES, _features, fit_lba, make_gbt, plan_signals
 
 K_MAX = 8
 BUDGETS = (2, 4)                                          # target mean actions per plan for the gates
 SCORES = ("LBA", "Aa", "D", "M")                          # before-acting gates from the plan's per-step scores
 FLIP = ("PD", "IR")                                       # decision-flip signals (docs/preregistration_decision_flip.md)
+EXTRA = ("IR1", "FI", "RS")                               # frontier study (docs/preregistration_frontier.md)
+FRONTIER_BUDGETS = (2, 6)
+RS_ELITES = 16
 GATES = ("oracle", *SCORES, "PE", "random")
 DECISION = ("act", "reg")                                 # decision oracles (confirmation study, see decision_scores)
 STEP = 0.05
@@ -60,6 +63,11 @@ class Arm:
 
 
 def arms_for(has_ensemble: bool, study: str = "main") -> list:
+	if study == "frontier":  # docs/preregistration_frontier.md: budgets 2 and 6, plus baselines/ablation at 4
+		arms = [Arm(f"k{k}", k=k) for k in FRONTIER_BUDGETS]
+		for b in FRONTIER_BUDGETS:
+			arms += [Arm(f"{g}@{b}", gate=g, budget=b) for g in ("random", "oracle", *DECISION, "IR", "LBA", "PE")]
+		return arms + [Arm(f"{g}@4", gate=g, budget=4) for g in EXTRA]
 	if study == "confirm":   # docs/preregistration_commitment_confirm.md: budget 4 only
 		gates = ("random", "oracle", *DECISION, "DBA", *SCORES, "PE", *FLIP)
 		return [Arm("k1", k=1), Arm("k4", k=4)] + [Arm(f"{g}@4", gate=g, budget=4) for g in gates
@@ -73,7 +81,7 @@ def arms_for(has_ensemble: bool, study: str = "main") -> list:
 
 # ------------------------------------------------------------------------------------------------ scoring one plan
 @torch.no_grad()
-def score_plan(agent, obs: torch.Tensor, plan: torch.Tensor, lba: dict):
+def score_plan(agent, obs: torch.Tensor, plan: torch.Tensor, lba: dict, pool: Optional[dict] = None):
 	"""Per-step scores [L] of the before-acting gates for one plan [H, A] from the real observation obs [D].
 
 	Step j judges the imagined transition into z_{j+1}, i.e. whether action j+1 is still chosen from a trustworthy
@@ -93,6 +101,8 @@ def score_plan(agent, obs: torch.Tensor, plan: torch.Tensor, lba: dict):
 		if k in sig:
 			steps[k] = sig[k][:L, 0].float()
 	steps.update(flip_scores(agent, z0, plan.to(dev), L))
+	if pool is not None:
+		steps["RS"] = rank_instability(agent, z0, plan.to(dev), pool, L)
 	return steps, roll, torch.as_tensor(X, dtype=torch.float32)
 
 
@@ -107,7 +117,8 @@ def flip_scores(agent, z0: torch.Tensor, plan: torch.Tensor, L: int) -> dict:
 	          imagined regret of the stale plan action, a label-free estimate of the reg oracle."""
 	model, cfg = agent.model, agent.cfg
 	H, A = plan.shape
-	trajs = member_rollouts(agent.aux_dynamics_heads(), z0, plan.view(H, 1, A))[:, 1:L + 1, 0]   # [M, L, d]
+	full = member_rollouts(agent.aux_dynamics_heads(), z0, plan.view(H, 1, A))[:, :, 0]         # [M, H+1, d]
+	trajs = full[:, 1:L + 1]                                                                    # [M, L, d]
 	M, _, d = trajs.shape
 	zf = trajs.reshape(M * L, d)
 	pa = pi_mean(model, zf).view(M, L, A)
@@ -115,8 +126,43 @@ def flip_scores(agent, z0: torch.Tensor, plan: torch.Tensor, L: int) -> dict:
 	a_plan = plan[1:L + 1].unsqueeze(0).expand(M, L, A).reshape(M * L, A)
 	q_pi = q_heads(model, zf, pa.view(M * L, A), cfg)                                           # [K, M*L, 1]
 	q_plan = q_heads(model, zf, a_plan, cfg)
-	ir = (q_pi - q_plan).clamp(min=0).view(-1, M, L).mean((0, 1))
-	return {"PD": pd.float().cpu(), "IR": ir.float().cpu()}
+	ir_all = (q_pi - q_plan).clamp(min=0).view(-1, M, L)
+	ir, ir1 = ir_all.mean((0, 1)), ir_all[:, 0].mean(0)
+	# FI (frontier study): temporal instability of the main head's imagined latent flow around z_{j+1}, the
+	# transferable analogue of the flow-instability signal of Hansen & Wang (2606.27326); TD-MPC2 has no decoder.
+	z = full[0]
+	fi = torch.stack([(z[min(j + 2, H)] - 2 * z[j + 1] + z[j]).norm() for j in range(L)])
+	return {"PD": pd.float().cpu(), "IR": ir.float().cpu(), "IR1": ir1.float().cpu(), "FI": fi.float().cpu()}
+
+
+@torch.no_grad()
+def rank_instability(agent, z0: torch.Tensor, plan: torch.Tensor, pool: dict, L: int) -> torch.Tensor:
+	"""RS[j] (frontier study): would the stale plan still win from the plausible states z^m_{j+1}?
+
+	Rank-stability baseline in the spirit of "Planners Exploit Deterministic Error" (2611.11780): the chosen plan
+	plus the RS_ELITES - 1 best other candidates of the planner's final MPPI pool; from each dynamics head's
+	imagined state z^m_{j+1} (of the chosen plan) every candidate's remaining actions j+1..H-1 are scored with the
+	planner's own value estimate (main model). RS[j] = mean over heads of the share of candidates that beat the plan."""
+	model, cfg, disc0 = agent.model, agent.cfg, float(agent.discount)
+	H, A = plan.shape
+	acts, val = pool["actions"], pool["value"].view(-1)
+	top = torch.topk(val, min(RS_ELITES - 1, val.numel())).indices
+	cand = torch.cat([plan.view(H, 1, A), acts[:, top].to(plan.device).clamp(-1, 1)], 1)      # [H, E, A]
+	E = cand.shape[1]
+	full = member_rollouts(agent.aux_dynamics_heads(), z0, plan.view(H, 1, A))[:, :, 0]       # [M, H+1, d]
+	M = full.shape[0]
+	out = []
+	for j in range(L):
+		z = full[:, j + 1].repeat_interleave(E, 0)                                             # [M*E, d]
+		a = cand[j + 1:].repeat(1, M, 1)                                                       # [T, M*E, A]
+		G, disc = 0, 1.0
+		for t in range(a.shape[0]):
+			G = G + disc * decode(model.reward(z, a[t], None), cfg)
+			z = model.next(z, a[t], None)
+			disc *= disc0
+		v = (G + disc * q_heads(model, z, pi_mean(model, z), cfg).mean(0)).view(M, E)
+		out.append((v[:, 1:] > v[:, :1]).float().mean())
+	return torch.stack(out).cpu()
 
 
 @torch.no_grad()
@@ -208,7 +254,8 @@ def shift_warm_start(planner, j: int):
 
 # ------------------------------------------------------------------------------------------------ calibration
 @torch.no_grad()
-def calibrate(agent, env, sim, lba: dict, episodes: int, seed_start: int, decision: bool = False) -> dict:
+def calibrate(agent, env, sim, lba: dict, episodes: int, seed_start: int, decision: bool = False,
+              pool: bool = False) -> dict:
 	"""Closed-loop k = 1 episodes; every chosen plan is also executed in the simulator copy.
 
 	Per decision: the gate scores [L], the true return error E [L] (oracle and labels), and the latent prediction
@@ -226,7 +273,7 @@ def calibrate(agent, env, sim, lba: dict, episodes: int, seed_start: int, decisi
 		while not done:
 			action = planner.act(obs, t0=t == 0)
 			plan = planner.last_plan.detach().cpu()
-			steps, roll, X = score_plan(agent, obs, plan, lba)
+			steps, roll, X = score_plan(agent, obs, plan, lba, pool=planner.last_pool if pool else None)
 			if decision:
 				d = decision_scores(agent, sim, planner2, planner.prev_mean, plan)
 				rec["act"].append(d["act"])
@@ -345,7 +392,7 @@ def run_arm(agent, env, sim, arm: Arm, lba: dict, th: dict, episodes: int, seed_
 				r_true, _ = sim.rollout(sim.save(), plan.view(plan.shape[0], 1, -1))
 				k = commit_len(plan_error(roll, r_true[:, 0], discount), th["oracle"][ctrl.level()], gen)
 			else:
-				steps, roll, _ = score_plan(agent, obs, plan, lba)
+				steps, roll, _ = score_plan(agent, obs, plan, lba, pool=planner.last_pool if arm.gate == "RS" else None)
 				k = commit_len(steps[arm.gate], th[arm.gate][ctrl.level()], gen)
 				if arm.abort:
 					pe_th = th["PE"][key(arm.budget)]
@@ -397,7 +444,7 @@ def main(argv=None):
 	p.add_argument("--episodes_file", default=None,
 	               help="episodes_<model>.pt saved by run_preflight (fits the LBA); if absent, 50 real episodes are "
 	                    "collected on seeds 2000-2049 (the protocol run_preflight used)")
-	p.add_argument("--study", choices=["main", "confirm"], default="main")
+	p.add_argument("--study", choices=["main", "confirm", "frontier"], default="main")
 	p.add_argument("--dba_episodes", type=int, default=20, help="confirm: episodes that train the decision-aware audit")
 	p.add_argument("--dba_seed_start", type=int, default=6800)
 	p.add_argument("--out", required=True)
@@ -440,6 +487,14 @@ def main(argv=None):
 		(out / "lba.pkl").write_bytes(pickle.dumps(lba))
 		print(f"DBA fitted on {tr['act'].shape[0]} decisions", flush=True)
 	# 1. thresholds from closed-loop k = 1 calibration episodes (separate seeds)
+	if args.study == "frontier" and not (out / "thresholds_extra.json").exists():
+		# reuses the confirmation job's directory (lba.pkl with the DBA, thresholds.json for every existing gate and
+		# level); only the new scores IR1, FI, RS need calibrating, on the same calibration seeds
+		cal = calibrate(agent, env, sim, lba, args.cal_episodes, args.cal_seed_start, pool=True)
+		ex = {g: v for g, v in thresholds_from(cal).items() if g in EXTRA}
+		torch.save(cal, out / "calibration_extra.pt")
+		(out / "thresholds_extra.json").write_text(json.dumps(ex, indent=1))
+		print(f"extra thresholds for {sorted(ex)}", flush=True)
 	if (out / "thresholds.json").exists():
 		th = json.loads((out / "thresholds.json").read_text())
 	else:
@@ -448,6 +503,8 @@ def main(argv=None):
 		torch.save(cal, out / "calibration.pt")
 		(out / "thresholds.json").write_text(json.dumps(th, indent=1))
 		print(f"thresholds: {json.dumps(th)}", flush=True)
+	if (out / "thresholds_extra.json").exists():
+		th.update(json.loads((out / "thresholds_extra.json").read_text()))
 
 	# 2. arms, same evaluation seeds
 	arms = arms_for(has_ensemble, args.study)
@@ -470,6 +527,8 @@ def main(argv=None):
 			sys.exit(85)
 	env.close()
 
+	if args.study == "frontier":    # the directory also holds the confirmation arms (same robot, same seeds)
+		arms = arms_for(has_ensemble, "confirm") + arms
 	write_outputs(out, arms)
 	print("done", flush=True)
 

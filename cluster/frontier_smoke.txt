@@ -1,0 +1,1 @@
+frsmoke_seed_grounded_ycb_s50, PickSingleYCB-v1, seed_grounded_ycb_s50, cc_seed_grounded_ycb_s50.tar.gz, 2, 2
