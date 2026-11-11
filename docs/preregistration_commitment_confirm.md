@@ -61,3 +61,9 @@ decision labels (act top quarter vs bottom half); achieved actions per plan.
 A smoke job (1 robot, 2 episodes per arm, small training and calibration sets) checks the pipeline first. Its numbers
 are not used. Amendments are allowed only before the full jobs start, only for problems the smoke job finds, and are
 committed with a reason.
+
+## Amendment 1 (2026-11-10, before the full jobs, before any result)
+
+Two arms are added to the same jobs, PD@4 and IR@4, for a separate pre-registered study
+(docs/preregistration_decision_flip.md). They share the jobs to save compute and keep pairing by seed. K1–K4, the
+other arms, the robots, the seeds and the statistics are unchanged. A second smoke job checks the new arms.

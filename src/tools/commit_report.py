@@ -127,7 +127,7 @@ def main(paths):
 		else (("return", "real plan errors"),)
 	for sec, (target, label) in enumerate(targets):
 		acc = {n: accuracy(r, target) for n, r in robots.items()}
-		keys = [k for k in ("LBA", "DBA", "Aa", "D", "M", "PE") if any(k in a for a in acc.values())]
+		keys = [k for k in ("LBA", "DBA", "Aa", "D", "M", "PD", "IR", "PE") if any(k in a for a in acc.values())]
 		print(f"\n## 2{'ab'[sec] if confirm else ''}. Accuracy of each gate score on {label} "
 		      "(calibration plans, steps 1-7, AUROC)\n")
 		print("| Robot | " + " | ".join(keys) + " |")
@@ -186,6 +186,24 @@ def confirm_claims(robots: dict):
 	for a, b in (("reg@4", "random@4"), ("act@4", "reg@4"), ("oracle@4", "random@4"), ("LBA@4", "random@4"),
 	             ("D@4", "random@4"), ("M@4", "random@4"), ("DBA@4", "Aa@4"), ("DBA@4", "PE@4"), ("k1", "k4"),
 	             ("act@4", "k1")):
+		print(f"- {a} − {b}: {fmt_ci(diff_ci(robots, a, b))}")
+	if any("IR@4" in r["arms"] for r in robots.values()):
+		flip_claims(robots)
+
+
+def flip_claims(robots: dict):
+	"""docs/preregistration_decision_flip.md: F1-F3."""
+	ok = lambda d: d["models"] > 0 and d["ci95"][0] > 0
+	print("\n## 5. Pre-registered claims (decision-flip signals)\n")
+	f1 = diff_ci(robots, "IR@4", "random@4")
+	print(f"- **F1** IR@4 − random@4 = {fmt_ci(f1)} → {'passed' if ok(f1) else 'failed'}")
+	f2 = diff_ci(robots, "PD@4", "D@4")
+	print(f"- **F2** PD@4 − D@4 = {fmt_ci(f2)} → {'passed' if ok(f2) else 'failed'}")
+	f3 = diff_ci(robots, "IR@4", "LBA@4")
+	print(f"- **F3** IR@4 − LBA@4 = {fmt_ci(f3)} → {'passed' if f3['models'] > 0 and f3['mean'] > 0 else 'failed'}")
+	print("\nReported, not claimed:\n")
+	for a, b in (("PD@4", "random@4"), ("IR@4", "DBA@4"), ("PD@4", "DBA@4"), ("IR@4", "Aa@4"), ("IR@4", "PE@4"),
+	             ("IR@4", "act@4"), ("PD@4", "act@4")):
 		print(f"- {a} − {b}: {fmt_ci(diff_ci(robots, a, b))}")
 
 

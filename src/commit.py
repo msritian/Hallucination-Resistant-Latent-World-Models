@@ -36,12 +36,13 @@ from typing import Optional
 import torch
 
 from src.monitor import H_LONG, plan_error
-from src.auditor.signals import q_heads
+from src.auditor.signals import member_rollouts, pi_mean, q_heads
 from src.preflight.run_preflight import CRITIC_FEATURES, _features, fit_lba, make_gbt, plan_signals
 
 K_MAX = 8
 BUDGETS = (2, 4)                                          # target mean actions per plan for the gates
 SCORES = ("LBA", "Aa", "D", "M")                          # before-acting gates from the plan's per-step scores
+FLIP = ("PD", "IR")                                       # decision-flip signals (docs/preregistration_decision_flip.md)
 GATES = ("oracle", *SCORES, "PE", "random")
 DECISION = ("act", "reg")                                 # decision oracles (confirmation study, see decision_scores)
 STEP = 0.05
@@ -60,7 +61,7 @@ class Arm:
 
 def arms_for(has_ensemble: bool, study: str = "main") -> list:
 	if study == "confirm":   # docs/preregistration_commitment_confirm.md: budget 4 only
-		gates = ("random", "oracle", *DECISION, "DBA", *SCORES, "PE")
+		gates = ("random", "oracle", *DECISION, "DBA", *SCORES, "PE", *FLIP)
 		return [Arm("k1", k=1), Arm("k4", k=4)] + [Arm(f"{g}@4", gate=g, budget=4) for g in gates
 		                                           if has_ensemble or g not in ("D", "M")]
 	arms = [Arm(f"k{k}", k=k) for k in (1, 2, 4, 8)]
@@ -91,7 +92,31 @@ def score_plan(agent, obs: torch.Tensor, plan: torch.Tensor, lba: dict):
 	for k in SCORES[1:]:
 		if k in sig:
 			steps[k] = sig[k][:L, 0].float()
+	steps.update(flip_scores(agent, z0, plan.to(dev), L))
 	return steps, roll, torch.as_tensor(X, dtype=torch.float32)
+
+
+@torch.no_grad()
+def flip_scores(agent, z0: torch.Tensor, plan: torch.Tensor, L: int) -> dict:
+	"""Training-free decision-flip signals for steps j = 0..L-1, each judging plan action j+1 (taken at z_{j+1}).
+
+	Every dynamics head imagines the plan on its own (main head first), giving plausible states z^m_{j+1}.
+	  PD[j] = mean_m |pi(z^m_{j+1}) - pi(z^0_{j+1})|: would the policy act differently in the plausible states?
+	          (disagreement in ACTION space; D measures it in state space)
+	  IR[j] = mean over heads m and critic heads h of max(0, Q_h(z^m_{j+1}, pi(z^m_{j+1})) - Q_h(z^m_{j+1}, a_{j+1})):
+	          imagined regret of the stale plan action, a label-free estimate of the reg oracle."""
+	model, cfg = agent.model, agent.cfg
+	H, A = plan.shape
+	trajs = member_rollouts(agent.aux_dynamics_heads(), z0, plan.view(H, 1, A))[:, 1:L + 1, 0]   # [M, L, d]
+	M, _, d = trajs.shape
+	zf = trajs.reshape(M * L, d)
+	pa = pi_mean(model, zf).view(M, L, A)
+	pd = (pa - pa[:1]).norm(dim=-1).mean(0) * M / max(M - 1, 1)                                 # mean over m >= 1
+	a_plan = plan[1:L + 1].unsqueeze(0).expand(M, L, A).reshape(M * L, A)
+	q_pi = q_heads(model, zf, pa.view(M * L, A), cfg)                                           # [K, M*L, 1]
+	q_plan = q_heads(model, zf, a_plan, cfg)
+	ir = (q_pi - q_plan).clamp(min=0).view(-1, M, L).mean((0, 1))
+	return {"PD": pd.float().cpu(), "IR": ir.float().cpu()}
 
 
 @torch.no_grad()
