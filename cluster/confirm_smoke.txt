@@ -1,0 +1,1 @@
+ccsmoke_mat_grounded_stack_s60, StackCube-v1, mat_grounded_stack_s60, real_none.tar.gz, 2, 2, 2

@@ -77,13 +77,19 @@ def actions_per_plan(robot: dict, arm: str) -> float:
 	return sum(r["steps"] for r in rows) / sum(r["plan_calls"] for r in rows)
 
 
-def accuracy(robot: dict) -> dict:
-	"""Step-stratified AUROC of each before-acting score for real plan errors (first K_MAX-1 steps, calibration)."""
+def accuracy(robot: dict, target: str = "return") -> dict:
+	"""Step-stratified AUROC of each before-acting score on the calibration plans (first K_MAX-1 steps).
+
+	target "return": real return-error labels (as in detection); "decision": act oracle top quarter vs bottom half."""
 	cal = robot["cal"]
-	if cal is None:
+	if cal is None or (target == "decision" and "act" not in cal):
 		return {}
-	E = cal["E"][:, :K_MAX - 1]
-	pos, neg = E > robot["lba"]["eps_hall"], E <= robot["lba"]["eps_clean"]
+	if target == "return":
+		E = cal["E"][:, :K_MAX - 1]
+		pos, neg = E > robot["lba"]["eps_hall"], E <= robot["lba"]["eps_clean"]
+	else:
+		E = cal["act"]
+		pos, neg = E > torch.quantile(E, 0.75), E <= torch.quantile(E, 0.5)
 	keep = pos | neg
 	steps = torch.arange(E.shape[1]).view(1, -1).expand_as(E)
 	out = {}
@@ -116,16 +122,24 @@ def main(paths):
 		print(f"| {a} | " + " | ".join("–" if v != v else f"{v:.2f}" for v in vals) +
 		      f" | **{sum(ok) / len(ok):.3f}** | {sum(apl) / len(apl):.2f} |")
 
-	acc = {n: accuracy(r) for n, r in robots.items()}
-	keys = [k for k in ("LBA", "Aa", "D", "M", "PE") if any(k in a for a in acc.values())]
-	print("\n## 2. Accuracy of each gate score on real plan errors (calibration plans, steps 1-7, AUROC)\n")
-	print("| Robot | " + " | ".join(keys) + " |")
-	print("| :-- | " + " | ".join(":-:" for _ in keys) + " |")
-	for n in names:
-		print(f"| {n} | " + " | ".join(f"{acc[n][k]:.3f}" if k in acc[n] else "–" for k in keys) + " |")
-	means = {k: [acc[n][k] for n in names if k in acc[n] and acc[n][k] == acc[n][k]] for k in keys}
-	print("| **Mean** | " + " | ".join(f"**{sum(v) / len(v):.3f}**" if v else "–" for v in means.values()) + " |")
+	confirm = any("act@4" in r["arms"] for r in robots.values())
+	targets = (("return", "real return errors"), ("decision", "decision-relevant errors (act oracle)")) if confirm \
+		else (("return", "real plan errors"),)
+	for sec, (target, label) in enumerate(targets):
+		acc = {n: accuracy(r, target) for n, r in robots.items()}
+		keys = [k for k in ("LBA", "DBA", "Aa", "D", "M", "PE") if any(k in a for a in acc.values())]
+		print(f"\n## 2{'ab'[sec] if confirm else ''}. Accuracy of each gate score on {label} "
+		      "(calibration plans, steps 1-7, AUROC)\n")
+		print("| Robot | " + " | ".join(keys) + " |")
+		print("| :-- | " + " | ".join(":-:" for _ in keys) + " |")
+		for n in names:
+			print(f"| {n} | " + " | ".join(f"{acc[n][k]:.3f}" if k in acc[n] else "–" for k in keys) + " |")
+		means = {k: [acc[n][k] for n in names if k in acc[n] and acc[n][k] == acc[n][k]] for k in keys}
+		print("| **Mean** | " + " | ".join(f"**{sum(v) / len(v):.3f}**" if v else "–" for v in means.values()) + " |")
 	print("\n(PE uses the real next state, so it is only available while acting, not before.)")
+	if confirm:
+		confirm_claims(robots)
+		return
 
 	print("\n## 3. Pre-registered claims\n")
 	c0a, c0b = diff_ci(robots, "k1", "k4"), diff_ci(robots, "oracle@4", "random@4")
@@ -152,6 +166,27 @@ def main(paths):
 		o, l = (diff_ci(robots, f"{x}@{b}", f"random@{b}")["mean"] for x in ("oracle", "LBA"))
 		if o == o and o != 0:
 			print(f"- Share of the oracle's gain over random captured by the LBA at budget {b}: {l / o:.2f}")
+
+
+def confirm_claims(robots: dict):
+	"""docs/preregistration_commitment_confirm.md: K1-K4."""
+	ok = lambda d: d["models"] > 0 and d["ci95"][0] > 0
+	print("\n## 3. Pre-registered claims (confirmation)\n")
+	k1 = diff_ci(robots, "act@4", "random@4")
+	print(f"- **K1** act@4 − random@4 = {fmt_ci(k1)} → {'passed' if ok(k1) else 'failed'}")
+	k2 = diff_ci(robots, "act@4", "oracle@4")
+	print(f"- **K2** act@4 − oracle@4 = {fmt_ci(k2)} → {'passed' if ok(k2) else 'failed'}")
+	k3 = {g: diff_ci(robots, f"{g}@4", "random@4") for g in ("Aa", "PE")}
+	print("- **K3** " + "; ".join(f"{g}@4 − random@4 = {fmt_ci(v)}" for g, v in k3.items()) +
+	      f" → {'passed' if all(ok(v) for v in k3.values()) else 'failed'}")
+	k4a, k4b = diff_ci(robots, "DBA@4", "random@4"), diff_ci(robots, "DBA@4", "LBA@4")
+	print(f"- **K4** DBA@4 − random@4 = {fmt_ci(k4a)}; DBA@4 − LBA@4 = {fmt_ci(k4b)} → "
+	      f"{'passed' if ok(k4a) and k4b['mean'] > 0 else 'failed'}")
+	print("\n## 4. Reported, not claimed\n")
+	for a, b in (("reg@4", "random@4"), ("act@4", "reg@4"), ("oracle@4", "random@4"), ("LBA@4", "random@4"),
+	             ("D@4", "random@4"), ("M@4", "random@4"), ("DBA@4", "Aa@4"), ("DBA@4", "PE@4"), ("k1", "k4"),
+	             ("act@4", "k1")):
+		print(f"- {a} − {b}: {fmt_ci(diff_ci(robots, a, b))}")
 
 
 if __name__ == "__main__":

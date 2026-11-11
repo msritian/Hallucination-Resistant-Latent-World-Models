@@ -36,12 +36,14 @@ from typing import Optional
 import torch
 
 from src.monitor import H_LONG, plan_error
-from src.preflight.run_preflight import CRITIC_FEATURES, _features, fit_lba, plan_signals
+from src.auditor.signals import q_heads
+from src.preflight.run_preflight import CRITIC_FEATURES, _features, fit_lba, make_gbt, plan_signals
 
 K_MAX = 8
 BUDGETS = (2, 4)                                          # target mean actions per plan for the gates
 SCORES = ("LBA", "Aa", "D", "M")                          # before-acting gates from the plan's per-step scores
 GATES = ("oracle", *SCORES, "PE", "random")
+DECISION = ("act", "reg")                                 # decision oracles (confirmation study, see decision_scores)
 STEP = 0.05
 LEVELS = [1 + STEP * i for i in range(int((K_MAX - 1) / STEP) + 1)]   # commitment levels 1.00 ... 8.00
 ETA = 0.05                                               # gain of the budget controller
@@ -56,7 +58,11 @@ class Arm:
 	abort: bool = False            # also stop early on the prediction-error check (combination arm)
 
 
-def arms_for(has_ensemble: bool) -> list:
+def arms_for(has_ensemble: bool, study: str = "main") -> list:
+	if study == "confirm":   # docs/preregistration_commitment_confirm.md: budget 4 only
+		gates = ("random", "oracle", *DECISION, "DBA", *SCORES, "PE")
+		return [Arm("k1", k=1), Arm("k4", k=4)] + [Arm(f"{g}@4", gate=g, budget=4) for g in gates
+		                                           if has_ensemble or g not in ("D", "M")]
 	arms = [Arm(f"k{k}", k=k) for k in (1, 2, 4, 8)]
 	for b in BUDGETS:
 		arms += [Arm(f"{g}@{b}", gate=g, budget=b) for g in GATES if has_ensemble or g not in ("D", "M")]
@@ -70,7 +76,8 @@ def score_plan(agent, obs: torch.Tensor, plan: torch.Tensor, lba: dict):
 	"""Per-step scores [L] of the before-acting gates for one plan [H, A] from the real observation obs [D].
 
 	Step j judges the imagined transition into z_{j+1}, i.e. whether action j+1 is still chosen from a trustworthy
-	imagined state. Returns ({score: [L]}, rollout)."""
+	imagined state. Returns ({score: [L]}, rollout, features [L, F]). With a decision-aware audit in lba["dba"], also
+	its score "DBA"."""
 	dev = next(agent.model.parameters()).device
 	H = plan.shape[0]
 	z0 = agent.model.encode(obs.to(dev).view(1, -1), None)
@@ -79,10 +86,53 @@ def score_plan(agent, obs: torch.Tensor, plan: torch.Tensor, lba: dict):
 	L = lba["L"]
 	X = _features(sig, roll, CRITIC_FEATURES, L, True).numpy()
 	steps = {"LBA": torch.as_tensor(lba["clf"].predict_proba(X)[:, 1], dtype=torch.float32)}
+	if "dba" in lba:
+		steps["DBA"] = torch.as_tensor(lba["dba"].predict_proba(X)[:, 1], dtype=torch.float32)
 	for k in SCORES[1:]:
 		if k in sig:
 			steps[k] = sig[k][:L, 0].float()
-	return steps, roll
+	return steps, roll, torch.as_tensor(X, dtype=torch.float32)
+
+
+@torch.no_grad()
+def decision_scores(agent, sim, planner2, prev_mean: torch.Tensor, plan: torch.Tensor) -> dict:
+	"""Decision oracles: is it still right to execute plan action j blind, for j = 1 .. K_MAX-1?
+
+	Executes plan[:j] in a simulator copy, replans from the real state reached (a second planner, warm-started exactly
+	as the robot would be), and compares the fresh decision with the stale plan action:
+	  act[j-1] = |a*_j - plan[j]|                    (would a fresh plan act differently?)
+	  reg[j-1] = Q(z_j, a*_j) - Q(z_j, plan[j])       (critic's regret of the stale action, at the REAL state z_j)
+	Unlike the return-error oracle, these ask whether an error changes the action, not whether the imagined value
+	is off."""
+	dev = next(agent.model.parameters()).device
+	n = K_MAX - 1
+	_, o = sim.rollout(sim.save(), plan[:n].view(n, 1, -1))              # obs after 1..n plan actions [n, 1, D]
+	act, reg = torch.zeros(n), torch.zeros(n)
+	for j in range(1, n + 1):
+		pm = prev_mean.clone()
+		if j > 1:                                                         # the planner itself shifts by one more
+			pm[:-(j - 1)] = prev_mean[j - 1:]
+			pm[-(j - 1):] = 0
+		planner2.prev_mean.copy_(pm)
+		a_star = planner2.act(o[j - 1, 0], t0=False)
+		a_plan = plan[j].cpu()
+		act[j - 1] = (a_star - a_plan).norm()
+		z = agent.model.encode(o[j - 1, 0].to(dev).view(1, -1), None).repeat(2, 1)
+		q = q_heads(agent.model, z, torch.stack([a_star, a_plan]).to(dev), agent.cfg).mean(0).view(-1)
+		reg[j - 1] = float(q[0] - q[1])
+	return dict(act=act, reg=reg)
+
+
+def fit_dba(rec: dict):
+	"""Decision-aware Bellman audit: the LBA's trees and features, but labels from the decision oracle (act).
+
+	Step j (judging action j+1) is positive if act is in the top quarter, negative if in the bottom half."""
+	n = K_MAX - 1
+	X = rec["X"][:, :n].reshape(-1, rec["X"].shape[-1])
+	y = rec["act"].reshape(-1)
+	hi, lo = float(torch.quantile(y, 0.75)), float(torch.quantile(y, 0.5))
+	keep = (y > hi) | (y <= lo)
+	return make_gbt().fit(X[keep].numpy(), (y[keep] > hi).numpy())
 
 
 @torch.no_grad()
@@ -133,23 +183,30 @@ def shift_warm_start(planner, j: int):
 
 # ------------------------------------------------------------------------------------------------ calibration
 @torch.no_grad()
-def calibrate(agent, env, sim, lba: dict, episodes: int, seed_start: int) -> dict:
+def calibrate(agent, env, sim, lba: dict, episodes: int, seed_start: int, decision: bool = False) -> dict:
 	"""Closed-loop k = 1 episodes; every chosen plan is also executed in the simulator copy.
 
 	Per decision: the gate scores [L], the true return error E [L] (oracle and labels), and the latent prediction
-	error PE [L] (distance of the encoded real state after j+1 plan actions from the imagined z_{j+1})."""
+	error PE [L] (distance of the encoded real state after j+1 plan actions from the imagined z_{j+1}).
+	With decision=True also the decision oracles act, reg [K_MAX-1] and the features X [L, F] (to fit the DBA)."""
 	from src.planning.audited_planner import AuditedPlanner, PlannerConfig
 	planner = AuditedPlanner(agent, PlannerConfig(horizon=H_LONG, score="standard"))
+	planner2 = AuditedPlanner(agent, PlannerConfig(horizon=H_LONG, score="standard"))
 	dev = next(agent.model.parameters()).device
 	discount = float(agent.discount)
 	L = lba["L"]
-	rec = dict(steps={}, E=[], PE=[], ep=[], t=[])
+	rec = dict(steps={}, E=[], PE=[], ep=[], t=[], act=[], reg=[], X=[])
 	for i in range(episodes):
 		obs, done, t = env.reset(seed=seed_start + i), False, 0
 		while not done:
 			action = planner.act(obs, t0=t == 0)
 			plan = planner.last_plan.detach().cpu()
-			steps, roll = score_plan(agent, obs, plan, lba)
+			steps, roll, X = score_plan(agent, obs, plan, lba)
+			if decision:
+				d = decision_scores(agent, sim, planner2, planner.prev_mean, plan)
+				rec["act"].append(d["act"])
+				rec["reg"].append(d["reg"])
+				rec["X"].append(X)
 			snap = sim.save()
 			r_true, o_true = sim.rollout(snap, plan.view(plan.shape[0], 1, -1))
 			rec["E"].append(plan_error(roll, r_true[:, 0], discount))
@@ -161,8 +218,11 @@ def calibrate(agent, env, sim, lba: dict, episodes: int, seed_start: int) -> dic
 			rec["t"].append(t)
 			obs, _, done, _ = env.step(action)
 			t += 1
-	return dict(steps={k: torch.stack(v) for k, v in rec["steps"].items()}, E=torch.stack(rec["E"]),
-	            PE=torch.stack(rec["PE"]), ep=torch.tensor(rec["ep"]), t=torch.tensor(rec["t"]))
+	out = dict(steps={k: torch.stack(v) for k, v in rec["steps"].items()}, E=torch.stack(rec["E"]),
+	           PE=torch.stack(rec["PE"]), ep=torch.tensor(rec["ep"]), t=torch.tensor(rec["t"]))
+	if decision:
+		out.update(act=torch.stack(rec["act"]), reg=torch.stack(rec["reg"]), X=torch.stack(rec["X"]))
+	return out
 
 
 def expected_k(c: torch.Tensor, thr: float, tie: float) -> float:
@@ -194,6 +254,7 @@ def thresholds_from(cal: dict) -> dict:
 	"""{gate: {level: {thr, tie}}}: for every level on LEVELS, the threshold whose mean commitment on the calibration
 	plans equals that level. Run time starts each gate at its budget and moves along these levels (BudgetControl)."""
 	scores = dict(cal["steps"], oracle=cal["E"], PE=cal["PE"])
+	scores.update({g: cal[g] for g in DECISION if g in cal})
 	return {g: {key(b): match(torch.cummax(s[:, :K_MAX - 1].float(), 1).values, b) for b in LEVELS}
 	        for g, s in scores.items()}
 
@@ -226,6 +287,7 @@ def run_arm(agent, env, sim, arm: Arm, lba: dict, th: dict, episodes: int, seed_
 	"""Run one arm on the evaluation seeds; returns per-episode rows and the per-plan commitments."""
 	from src.planning.audited_planner import AuditedPlanner, PlannerConfig
 	planner = AuditedPlanner(agent, PlannerConfig(horizon=H_LONG, score="standard"))
+	planner2 = AuditedPlanner(agent, PlannerConfig(horizon=H_LONG, score="standard")) if arm.gate in DECISION else None
 	gen = torch.Generator().manual_seed(seed)
 	discount = float(agent.discount)
 	q = random_q(arm.budget) if arm.gate == "random" else None
@@ -248,14 +310,17 @@ def run_arm(agent, env, sim, arm: Arm, lba: dict, th: dict, episodes: int, seed_
 					k += 1
 			elif arm.gate == "PE":
 				k = K_MAX
-				_, roll = score_plan(agent, obs, plan, lba)
+				_, roll, _ = score_plan(agent, obs, plan, lba)
 				pe_th = th["PE"][ctrl.level()]
+			elif arm.gate in DECISION:
+				d = decision_scores(agent, sim, planner2, planner.prev_mean, plan)
+				k = commit_len(d[arm.gate], th[arm.gate][ctrl.level()], gen)
 			elif arm.gate == "oracle":
-				steps, roll = score_plan(agent, obs, plan, lba)
+				steps, roll, _ = score_plan(agent, obs, plan, lba)
 				r_true, _ = sim.rollout(sim.save(), plan.view(plan.shape[0], 1, -1))
 				k = commit_len(plan_error(roll, r_true[:, 0], discount), th["oracle"][ctrl.level()], gen)
 			else:
-				steps, roll = score_plan(agent, obs, plan, lba)
+				steps, roll, _ = score_plan(agent, obs, plan, lba)
 				k = commit_len(steps[arm.gate], th[arm.gate][ctrl.level()], gen)
 				if arm.abort:
 					pe_th = th["PE"][key(arm.budget)]
@@ -297,14 +362,19 @@ def write_outputs(out: Path, arms: list):
 # ------------------------------------------------------------------------------------------------ main
 def main(argv=None):
 	from src.envs.maniskill3 import ManiSkill3Env
-	from src.preflight.run_preflight import load_agent
+	from src.preflight.run_preflight import collect, load_agent
 	from src.tools.plan_diag import SimSnapshot
 
 	p = argparse.ArgumentParser()
 	p.add_argument("--model", required=True)
 	p.add_argument("--run", choices=["stock", "grounded", "grounded_noaux", "stock_aux"], required=True)
 	p.add_argument("--task", required=True)
-	p.add_argument("--episodes_file", required=True, help="episodes_<model>.pt saved by run_preflight (fits the LBA)")
+	p.add_argument("--episodes_file", default=None,
+	               help="episodes_<model>.pt saved by run_preflight (fits the LBA); if absent, 50 real episodes are "
+	                    "collected on seeds 2000-2049 (the protocol run_preflight used)")
+	p.add_argument("--study", choices=["main", "confirm"], default="main")
+	p.add_argument("--dba_episodes", type=int, default=20, help="confirm: episodes that train the decision-aware audit")
+	p.add_argument("--dba_seed_start", type=int, default=6800)
 	p.add_argument("--out", required=True)
 	p.add_argument("--episodes", type=int, default=100)
 	p.add_argument("--seed_start", type=int, default=6000)
@@ -323,7 +393,12 @@ def main(argv=None):
 	if (out / "lba.pkl").exists():
 		lba = pickle.loads((out / "lba.pkl").read_bytes())
 	else:
-		data = torch.load(args.episodes_file)
+		if args.episodes_file:
+			data = torch.load(args.episodes_file)
+		else:
+			data = collect(agent, args.task, 50, 2000)
+			torch.save(data, out / "episodes.pt")
+			print(f"collected 50 real episodes, success {float(data['success'][:, -1].float().mean()):.2f}", flush=True)
 		lba = fit_lba(agent, data, H_LONG, beta=1.0)
 		(out / "lba.pkl").write_bytes(pickle.dumps(lba))
 		(out / "lba.json").write_text(json.dumps({k: lba[k] for k in ("eps_clean", "eps_hall", "L", "n_pos")}, indent=1))
@@ -331,18 +406,26 @@ def main(argv=None):
 
 	env = ManiSkill3Env(args.task, seed=args.seed_start)
 	sim = SimSnapshot(env)
+	decision = args.study == "confirm"
+	# 0b. confirm: the decision-aware audit, trained on its own episodes (separate seeds)
+	if decision and "dba" not in lba:
+		tr = calibrate(agent, env, sim, lba, args.dba_episodes, args.dba_seed_start, decision=True)
+		lba["dba"] = fit_dba(tr)
+		torch.save(tr, out / "dba_train.pt")
+		(out / "lba.pkl").write_bytes(pickle.dumps(lba))
+		print(f"DBA fitted on {tr['act'].shape[0]} decisions", flush=True)
 	# 1. thresholds from closed-loop k = 1 calibration episodes (separate seeds)
 	if (out / "thresholds.json").exists():
 		th = json.loads((out / "thresholds.json").read_text())
 	else:
-		cal = calibrate(agent, env, sim, lba, args.cal_episodes, args.cal_seed_start)
+		cal = calibrate(agent, env, sim, lba, args.cal_episodes, args.cal_seed_start, decision=decision)
 		th = thresholds_from(cal)
 		torch.save(cal, out / "calibration.pt")
 		(out / "thresholds.json").write_text(json.dumps(th, indent=1))
 		print(f"thresholds: {json.dumps(th)}", flush=True)
 
 	# 2. arms, same evaluation seeds
-	arms = arms_for(has_ensemble)
+	arms = arms_for(has_ensemble, args.study)
 	if args.arms:
 		keep = set(args.arms.split(","))
 		arms = [a for a in arms if a.name in keep]
