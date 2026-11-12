@@ -315,6 +315,8 @@ def main(cfg):
 	episodes, cal_eps = int(cfg.get("episodes", 30)), int(cfg.get("cal_episodes", 5))
 	subset = str(cfg.get("tasks_subset"))
 	arms_only = cfg.get("arms", None)
+	fixed = cfg.get("fixed_ks", None)          # headroom pilot: only fixed-k arms, no calibration
+	seed0 = int(cfg.get("seed0", 6000))
 	cfg = parse_cfg(cfg)
 	env = make_env(cfg)
 	agent = TDMPC2(cfg)
@@ -326,7 +328,9 @@ def main(cfg):
 		pl, pl2 = Planner(agent, ti, disc), Planner(agent, ti, disc)
 		d = out / task
 		(d / "arms").mkdir(parents=True, exist_ok=True)
-		if (d / "thresholds.json").exists():
+		if fixed:
+			th = {}
+		elif (d / "thresholds.json").exists():
 			th = json.loads((d / "thresholds.json").read_text())
 		else:
 			cal = calibrate(env, sim, pl, pl2, ti, cal_eps, 6900)
@@ -337,11 +341,12 @@ def main(cfg):
 			                                            eps_clean=float(torch.quantile(E, 0.5)))))
 			(d / "thresholds.json").write_text(json.dumps(th))
 			print(f"{task}: calibrated on {E.shape[0]} plans", flush=True)
-		for n, (name, gate, budget) in enumerate(ARMS):
+		arms = [(f"k{k}", None, int(k)) for k in str(fixed).split("+")] if fixed else ARMS
+		for n, (name, gate, budget) in enumerate(arms):
 			f = d / "arms" / f"{name}.pt"
 			if f.exists() or (arms_only and name not in str(arms_only).split("+")):
 				continue
-			rows = run_arm(env, sim, pl, pl2, ti, name, gate, budget, th, episodes, 6000, n)
+			rows = run_arm(env, sim, pl, pl2, ti, name, gate, budget, th, episodes, seed0, n)
 			torch.save(dict(rows=rows), f)
 			print(f"{task:20s} {name:10s} return {np.mean([r['reward'] for r in rows]):6.1f}  "
 			      f"actions per plan {sum(r['steps'] for r in rows) / sum(r['plan_calls'] for r in rows):.2f}  "
