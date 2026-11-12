@@ -14,7 +14,7 @@ transfer_output_remaps = "dcm.tar.gz = results/$(name).tar.gz"
 log = logs/$(name).log
 output = logs/$(name).$(Cluster).out
 error = logs/$(name).$(Cluster).err
-requirements = (HasCHTCStaging == true) && (TARGET.Machine =!= "gpu117.cm.cluster")
+requirements = (HasCHTCStaging == true) && (TARGET.Machine =!= "gpu117.cm.cluster") && (TARGET.Machine =!= "gpu4001.chtc.wisc.edu")
 request_gpus = 1
 gpus_minimum_capability = 7.0
 gpus_maximum_capability = 12.0
