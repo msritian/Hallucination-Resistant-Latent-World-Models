@@ -60,6 +60,7 @@ class Arm:
 	gate: Optional[str] = None
 	budget: int = 0                # target mean commitment of the gate
 	abort: bool = False            # also stop early on the prediction-error check (combination arm)
+	fast: bool = False             # timing study: compute only this gate's score (lean scorer, see ir_only)
 
 
 def arms_for(has_ensemble: bool, study: str = "main") -> list:
@@ -68,6 +69,9 @@ def arms_for(has_ensemble: bool, study: str = "main") -> list:
 		for b in FRONTIER_BUDGETS:
 			arms += [Arm(f"{g}@{b}", gate=g, budget=b) for g in ("random", "oracle", *DECISION, "IR", "LBA", "PE")]
 		return arms + [Arm(f"{g}@4", gate=g, budget=4) for g in EXTRA]
+	if study == "timing":    # docs/preregistration_wallclock.md: lean IR gate vs fixed chunking, wall-clock
+		return [Arm(f"k{k}", k=k) for k in (1, 2, 4, 6)] + [Arm(f"IR@{b}", gate="IR", budget=b, fast=True)
+		                                                     for b in (2, 4, 6)]
 	if study == "confirm":   # docs/preregistration_commitment_confirm.md: budget 4 only
 		gates = ("random", "oracle", *DECISION, "DBA", *SCORES, "PE", *FLIP)
 		return [Arm("k1", k=1), Arm("k4", k=4)] + [Arm(f"{g}@4", gate=g, budget=4) for g in gates
@@ -133,6 +137,23 @@ def flip_scores(agent, z0: torch.Tensor, plan: torch.Tensor, L: int) -> dict:
 	z = full[0]
 	fi = torch.stack([(z[min(j + 2, H)] - 2 * z[j + 1] + z[j]).norm() for j in range(L)])
 	return {"PD": pd.float().cpu(), "IR": ir.float().cpu(), "IR1": ir1.float().cpu(), "FI": fi.float().cpu()}
+
+
+@torch.no_grad()
+def ir_only(agent, obs: torch.Tensor, plan: torch.Tensor, L: int) -> torch.Tensor:
+	"""IR [L] alone (timing study): the same computation as flip_scores' IR, without the other gates' scores."""
+	model, cfg = agent.model, agent.cfg
+	dev = next(model.parameters()).device
+	plan = plan.to(dev)
+	H, A = plan.shape
+	z0 = model.encode(obs.to(dev).view(1, -1), None)
+	trajs = member_rollouts(agent.aux_dynamics_heads(), z0, plan.view(H, 1, A))[:, 1:L + 1, 0]  # [M, L, d]
+	M, _, d = trajs.shape
+	zf = trajs.reshape(M * L, d)
+	pa = pi_mean(model, zf)
+	a_plan = plan[1:L + 1].unsqueeze(0).expand(M, L, A).reshape(M * L, A)
+	ir = (q_heads(model, zf, pa, cfg) - q_heads(model, zf, a_plan, cfg)).clamp(min=0).view(-1, M, L).mean((0, 1))
+	return ir.float().cpu()
 
 
 @torch.no_grad()
@@ -364,14 +385,19 @@ def run_arm(agent, env, sim, arm: Arm, lba: dict, th: dict, episodes: int, seed_
 	discount = float(agent.discount)
 	q = random_q(arm.budget) if arm.gate == "random" else None
 	ctrl = BudgetControl(arm.budget) if arm.gate not in (None, "random") else None
-	rows, rec = [], dict(ep=[], t=[], k=[])
+	rows, rec = [], dict(ep=[], t=[], k=[], t_plan=[], t_gate=[])
+	sync = torch.cuda.synchronize if torch.cuda.is_available() else (lambda: None)
 	for i in range(episodes):
 		obs, done, t, ep_reward, calls, j = env.reset(seed=seed_start + i), False, 0, 0.0, 0, 0
 		start = time.perf_counter()
 		while not done:
+			sync()
+			t_a = time.perf_counter()
 			shift_warm_start(planner, j)
 			planner.act(obs, t0=calls == 0)
 			plan = planner.last_plan.detach().cpu().clamp(-1, 1)
+			sync()
+			t_b = time.perf_counter()
 			calls += 1
 			roll, pe_th = None, None
 			if arm.gate is None:
@@ -380,6 +406,8 @@ def run_arm(agent, env, sim, arm: Arm, lba: dict, th: dict, episodes: int, seed_
 				k = 1
 				while k < K_MAX and bool(torch.rand(1, generator=gen) < q):
 					k += 1
+			elif arm.fast:
+				k = commit_len(ir_only(agent, obs, plan, lba["L"]), th[arm.gate][ctrl.level()], gen)
 			elif arm.gate == "PE":
 				k = K_MAX
 				_, roll, _ = score_plan(agent, obs, plan, lba)
@@ -396,6 +424,9 @@ def run_arm(agent, env, sim, arm: Arm, lba: dict, th: dict, episodes: int, seed_
 				k = commit_len(steps[arm.gate], th[arm.gate][ctrl.level()], gen)
 				if arm.abort:
 					pe_th = th["PE"][key(arm.budget)]
+			sync()
+			rec["t_plan"].append(t_b - t_a)
+			rec["t_gate"].append(time.perf_counter() - t_b)
 			rec["ep"].append(i)
 			rec["t"].append(t)
 			j = 0
@@ -444,7 +475,7 @@ def main(argv=None):
 	p.add_argument("--episodes_file", default=None,
 	               help="episodes_<model>.pt saved by run_preflight (fits the LBA); if absent, 50 real episodes are "
 	                    "collected on seeds 2000-2049 (the protocol run_preflight used)")
-	p.add_argument("--study", choices=["main", "confirm", "frontier"], default="main")
+	p.add_argument("--study", choices=["main", "confirm", "frontier", "timing"], default="main")
 	p.add_argument("--dba_episodes", type=int, default=20, help="confirm: episodes that train the decision-aware audit")
 	p.add_argument("--dba_seed_start", type=int, default=6800)
 	p.add_argument("--out", required=True)
@@ -505,6 +536,20 @@ def main(argv=None):
 		print(f"thresholds: {json.dumps(th)}", flush=True)
 	if (out / "thresholds_extra.json").exists():
 		th.update(json.loads((out / "thresholds_extra.json").read_text()))
+
+	if args.study == "timing":      # the lean scorer must give the IR the earlier studies gated on
+		from src.planning.audited_planner import AuditedPlanner, PlannerConfig
+		pl = AuditedPlanner(agent, PlannerConfig(horizon=H_LONG, score="standard"))
+		obs, worst = env.reset(seed=args.cal_seed_start), 0.0
+		for c in range(5):
+			pl.act(obs, t0=c == 0)
+			plan = pl.last_plan.detach().cpu().clamp(-1, 1)
+			z0 = agent.model.encode(obs.to(next(agent.model.parameters()).device).view(1, -1), None)
+			ref = flip_scores(agent, z0, plan.to(z0.device), lba["L"])["IR"]
+			worst = max(worst, float((ir_only(agent, obs, plan, lba["L"]) - ref).abs().max()))
+			obs = env.step(plan[0])[0]
+		print(f"lean IR check: max |difference| = {worst:.2e}", flush=True)
+		assert worst < 1e-5, "lean IR scorer disagrees with flip_scores"
 
 	# 2. arms, same evaluation seeds
 	arms = arms_for(has_ensemble, args.study)
