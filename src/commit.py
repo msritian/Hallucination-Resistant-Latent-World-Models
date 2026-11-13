@@ -70,6 +70,10 @@ def arms_for(has_ensemble: bool, study: str = "main") -> list:
 		for b in FRONTIER_BUDGETS:
 			arms += [Arm(f"{g}@{b}", gate=g, budget=b) for g in ("random", "oracle", *DECISION, "IR", "LBA", "PE")]
 		return arms + [Arm(f"{g}@4", gate=g, budget=4) for g in EXTRA]
+	if study == "general":   # docs/preregistration_general.md: new robots (stock TD-MPC2, new tasks)
+		return ([Arm(f"k{k}", k=k) for k in (1, 2, 4, 6)] + [Arm("random@4", gate="random", budget=4)]
+		        + [Arm(f"IR@{b}", gate="IR", budget=b, fast=True, fast2=True) for b in (2, 4, 6)]
+		        + [Arm("PE@4", gate="PE", budget=4)])
 	if study == "timing2":   # docs/preregistration_wallclock2.md: the batched IR scorer
 		return [Arm(f"k{k}", k=k) for k in (1, 2, 4, 6)] + [Arm(f"IR@{b}", gate="IR", budget=b, fast=True, fast2=True)
 		                                                     for b in (2, 4, 6)]
@@ -526,7 +530,7 @@ def main(argv=None):
 	p.add_argument("--episodes_file", default=None,
 	               help="episodes_<model>.pt saved by run_preflight (fits the LBA); if absent, 50 real episodes are "
 	                    "collected on seeds 2000-2049 (the protocol run_preflight used)")
-	p.add_argument("--study", choices=["main", "confirm", "frontier", "timing", "timing2"], default="main")
+	p.add_argument("--study", choices=["main", "confirm", "frontier", "timing", "timing2", "general"], default="main")
 	p.add_argument("--dba_episodes", type=int, default=20, help="confirm: episodes that train the decision-aware audit")
 	p.add_argument("--dba_seed_start", type=int, default=6800)
 	p.add_argument("--out", required=True)
@@ -588,8 +592,8 @@ def main(argv=None):
 	if (out / "thresholds_extra.json").exists():
 		th.update(json.loads((out / "thresholds_extra.json").read_text()))
 
-	if args.study in ("timing", "timing2"):   # the lean scorer must give the IR the earlier studies gated on
-		scorer = ir_fast if args.study == "timing2" else ir_only
+	if args.study in ("timing", "timing2", "general"):   # the lean scorer must give the IR of flip_scores
+		scorer = ir_only if args.study == "timing" else ir_fast
 		from src.planning.audited_planner import AuditedPlanner, PlannerConfig
 		pl = AuditedPlanner(agent, PlannerConfig(horizon=H_LONG, score="standard"))
 		obs, worst = env.reset(seed=args.cal_seed_start), 0.0
@@ -602,6 +606,7 @@ def main(argv=None):
 			obs = env.step(plan[0])[0]
 		print(f"lean IR check: max relative difference = {worst:.2e}", flush=True)
 		assert worst < (1e-5 if args.study == "timing" else 1e-3), "lean IR scorer disagrees with flip_scores"
+		print(f"ensemble heads: {1 + agent.num_aux_dynamics}", flush=True)
 
 	# 2. arms, same evaluation seeds
 	arms = arms_for(has_ensemble, args.study)

@@ -1,0 +1,12 @@
+new_grounded_pick_s70, grounded, PickCube-v1, 70, 500000, --max_hours 3 --eval_freq 50000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default
+new_grounded_pick_s71, grounded, PickCube-v1, 71, 500000, --max_hours 3 --eval_freq 50000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default
+new_grounded_pick_s72, grounded, PickCube-v1, 72, 500000, --max_hours 3 --eval_freq 50000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default
+new_grounded_poke_s70, grounded, PokeCube-v1, 70, 1000000, --max_hours 3 --eval_freq 50000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default
+new_grounded_poke_s71, grounded, PokeCube-v1, 71, 1000000, --max_hours 3 --eval_freq 50000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default
+new_grounded_poke_s72, grounded, PokeCube-v1, 72, 1000000, --max_hours 3 --eval_freq 50000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default
+new_grounded_pull_s70, grounded, PullCubeTool-v1, 70, 1000000, --max_hours 3 --eval_freq 50000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default
+new_grounded_pull_s71, grounded, PullCubeTool-v1, 71, 1000000, --max_hours 3 --eval_freq 50000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default
+new_grounded_pull_s72, grounded, PullCubeTool-v1, 72, 1000000, --max_hours 3 --eval_freq 50000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default
+new_grounded_lift_s70, grounded, LiftPegUpright-v1, 70, 1000000, --max_hours 3 --eval_freq 50000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default
+new_grounded_lift_s71, grounded, LiftPegUpright-v1, 71, 1000000, --max_hours 3 --eval_freq 50000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default
+new_grounded_lift_s72, grounded, LiftPegUpright-v1, 72, 1000000, --max_hours 3 --eval_freq 50000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default

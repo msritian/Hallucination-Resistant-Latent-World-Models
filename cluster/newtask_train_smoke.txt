@@ -1,0 +1,4 @@
+nsm_grounded_pick_s70, grounded, PickCube-v1, 70, 20000, --max_hours 1 --eval_freq 10000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default
+nsm_grounded_poke_s70, grounded, PokeCube-v1, 70, 20000, --max_hours 1 --eval_freq 10000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default
+nsm_grounded_pull_s70, grounded, PullCubeTool-v1, 70, 20000, --max_hours 1 --eval_freq 10000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default
+nsm_grounded_lift_s70, grounded, LiftPegUpright-v1, 70, 20000, --max_hours 1 --eval_freq 10000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default

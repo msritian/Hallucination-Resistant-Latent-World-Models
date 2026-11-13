@@ -26,7 +26,7 @@ log = logs/$(name).log
 output = logs/$(name).$(Cluster).$(Process).out
 error = logs/$(name).$(Cluster).$(Process).err
 
-requirements = (TARGET.PoolName =?= "CHTC") && (TARGET.Machine =!= "gpu117.cm.cluster")
+requirements = (TARGET.PoolName =?= "CHTC") && (TARGET.Machine =!= "gpu117.cm.cluster") && (TARGET.Machine =!= "gpu4001.chtc.wisc.edu")
 
 request_gpus = 1
 gpus_minimum_capability = 7.0

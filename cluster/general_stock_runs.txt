@@ -1,0 +1,10 @@
+gs_push_s40, PushCube-v1, seed_stock_push_s40, stock, 100, 6300
+gs_push_s50, PushCube-v1, seed_stock_push_s50, stock, 100, 6300
+gs_stack_s20, StackCube-v1, seed_stock_stack_s20, stock, 100, 6300
+gs_stack_s30, StackCube-v1, seed_stock_stack_s30, stock, 100, 6300
+gs_stack_s40, StackCube-v1, seed_stock_stack_s40, stock, 100, 6300
+gs_stack_s50, StackCube-v1, seed_stock_stack_s50, stock, 100, 6300
+gs_ycb_s20, PickSingleYCB-v1, seed_stock_ycb_s20, stock, 100, 6300
+gs_ycb_s30, PickSingleYCB-v1, seed_stock_ycb_s30, stock, 100, 6300
+gs_ycb_s40, PickSingleYCB-v1, seed_stock_ycb_s40, stock, 100, 6300
+gs_ycb_s50, PickSingleYCB-v1, seed_stock_ycb_s50, stock, 100, 6300
