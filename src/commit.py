@@ -61,6 +61,7 @@ class Arm:
 	budget: int = 0                # target mean commitment of the gate
 	abort: bool = False            # also stop early on the prediction-error check (combination arm)
 	fast: bool = False             # timing study: compute only this gate's score (lean scorer, see ir_only)
+	fast2: bool = False            # timing study 2: the batched scorer ir_fast
 
 
 def arms_for(has_ensemble: bool, study: str = "main") -> list:
@@ -69,6 +70,9 @@ def arms_for(has_ensemble: bool, study: str = "main") -> list:
 		for b in FRONTIER_BUDGETS:
 			arms += [Arm(f"{g}@{b}", gate=g, budget=b) for g in ("random", "oracle", *DECISION, "IR", "LBA", "PE")]
 		return arms + [Arm(f"{g}@4", gate=g, budget=4) for g in EXTRA]
+	if study == "timing2":   # docs/preregistration_wallclock2.md: the batched IR scorer
+		return [Arm(f"k{k}", k=k) for k in (1, 2, 4, 6)] + [Arm(f"IR@{b}", gate="IR", budget=b, fast=True, fast2=True)
+		                                                     for b in (2, 4, 6)]
 	if study == "timing":    # docs/preregistration_wallclock.md: lean IR gate vs fixed chunking, wall-clock
 		return [Arm(f"k{k}", k=k) for k in (1, 2, 4, 6)] + [Arm(f"IR@{b}", gate="IR", budget=b, fast=True)
 		                                                     for b in (2, 4, 6)]
@@ -153,6 +157,53 @@ def ir_only(agent, obs: torch.Tensor, plan: torch.Tensor, L: int) -> torch.Tenso
 	pa = pi_mean(model, zf)
 	a_plan = plan[1:L + 1].unsqueeze(0).expand(M, L, A).reshape(M * L, A)
 	ir = (q_heads(model, zf, pa, cfg) - q_heads(model, zf, a_plan, cfg)).clamp(min=0).view(-1, M, L).mean((0, 1))
+	return ir.float().cpu()
+
+
+def _stack_heads(agent) -> list:
+	"""Per layer of the dynamics MLPs: (W [M, in, out], b [M, 1, out], ln_w [M, 1, out], ln_b [M, 1, out], eps, act),
+	stacking the main head (first) and the auxiliary heads, which share one architecture (layers.mlp). Cached."""
+	if getattr(agent, "_stacked_heads", None) is None:
+		mods = [agent.model._dynamics] + (list(agent.model._dyn_aux) if agent.num_aux_dynamics > 0 else [])
+		out = []
+		for i in range(len(mods[0])):
+			ls = [m[i] for m in mods]
+			out.append((torch.stack([l.weight.t() for l in ls]), torch.stack([l.bias.view(1, -1) for l in ls]),
+			            torch.stack([l.ln.weight.view(1, -1) for l in ls]), torch.stack([l.ln.bias.view(1, -1) for l in ls]),
+			            ls[0].ln.eps, ls[0].act))
+		agent._stacked_heads = out
+	return agent._stacked_heads
+
+
+def heads_next(stacked: list, z: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+	"""All dynamics heads at once: z [M, N, d], a [M, N, A] -> [M, N, d] (each head on its own latent)."""
+	x = torch.cat([z, a], -1)
+	for W, b, g, beta, eps, act in stacked:
+		x = torch.baddbmm(b, x, W)
+		x = act(torch.nn.functional.layer_norm(x, x.shape[-1:], None, None, eps) * g + beta)
+	return x
+
+
+@torch.no_grad()
+def ir_fast(agent, obs: torch.Tensor, plan: torch.Tensor, L: int) -> torch.Tensor:
+	"""IR [L] as ir_only, faster (timing study 2): all heads in one batched call per step, only the L steps used
+	(z_1 .. z_L), and one critic call for the policy and plan actions together."""
+	model, cfg = agent.model, agent.cfg
+	dev = next(model.parameters()).device
+	plan = plan.to(dev)
+	A = plan.shape[1]
+	st = _stack_heads(agent)
+	M = st[0][0].shape[0]
+	z = model.encode(obs.to(dev).view(1, -1), None).expand(M, 1, -1)
+	zs = []
+	for t in range(L):
+		z = heads_next(st, z, plan[t].view(1, 1, A).expand(M, 1, A))
+		zs.append(z[:, 0])
+	zf = torch.stack(zs, 1).reshape(M * L, -1)                                                  # [M*L, d], m-major
+	pa = pi_mean(model, zf)
+	a_plan = plan[1:L + 1].unsqueeze(0).expand(M, L, A).reshape(M * L, A)
+	q = q_heads(model, torch.cat([zf, zf]), torch.cat([pa, a_plan]), cfg)                       # [K, 2*M*L, 1]
+	ir = (q[:, :M * L] - q[:, M * L:]).clamp(min=0).view(-1, M, L).mean((0, 1))
 	return ir.float().cpu()
 
 
@@ -407,7 +458,7 @@ def run_arm(agent, env, sim, arm: Arm, lba: dict, th: dict, episodes: int, seed_
 				while k < K_MAX and bool(torch.rand(1, generator=gen) < q):
 					k += 1
 			elif arm.fast:
-				k = commit_len(ir_only(agent, obs, plan, lba["L"]), th[arm.gate][ctrl.level()], gen)
+				k = commit_len((ir_fast if arm.fast2 else ir_only)(agent, obs, plan, lba["L"]), th[arm.gate][ctrl.level()], gen)
 			elif arm.gate == "PE":
 				k = K_MAX
 				_, roll, _ = score_plan(agent, obs, plan, lba)
@@ -475,7 +526,7 @@ def main(argv=None):
 	p.add_argument("--episodes_file", default=None,
 	               help="episodes_<model>.pt saved by run_preflight (fits the LBA); if absent, 50 real episodes are "
 	                    "collected on seeds 2000-2049 (the protocol run_preflight used)")
-	p.add_argument("--study", choices=["main", "confirm", "frontier", "timing"], default="main")
+	p.add_argument("--study", choices=["main", "confirm", "frontier", "timing", "timing2"], default="main")
 	p.add_argument("--dba_episodes", type=int, default=20, help="confirm: episodes that train the decision-aware audit")
 	p.add_argument("--dba_seed_start", type=int, default=6800)
 	p.add_argument("--out", required=True)
@@ -537,7 +588,8 @@ def main(argv=None):
 	if (out / "thresholds_extra.json").exists():
 		th.update(json.loads((out / "thresholds_extra.json").read_text()))
 
-	if args.study == "timing":      # the lean scorer must give the IR the earlier studies gated on
+	if args.study in ("timing", "timing2"):   # the lean scorer must give the IR the earlier studies gated on
+		scorer = ir_fast if args.study == "timing2" else ir_only
 		from src.planning.audited_planner import AuditedPlanner, PlannerConfig
 		pl = AuditedPlanner(agent, PlannerConfig(horizon=H_LONG, score="standard"))
 		obs, worst = env.reset(seed=args.cal_seed_start), 0.0
@@ -546,10 +598,10 @@ def main(argv=None):
 			plan = pl.last_plan.detach().cpu().clamp(-1, 1)
 			z0 = agent.model.encode(obs.to(next(agent.model.parameters()).device).view(1, -1), None)
 			ref = flip_scores(agent, z0, plan.to(z0.device), lba["L"])["IR"]
-			worst = max(worst, float((ir_only(agent, obs, plan, lba["L"]) - ref).abs().max()))
+			worst = max(worst, float((scorer(agent, obs, plan, lba["L"]) - ref).abs().max() / (ref.abs().max() + 1e-6)))
 			obs = env.step(plan[0])[0]
-		print(f"lean IR check: max |difference| = {worst:.2e}", flush=True)
-		assert worst < 1e-5, "lean IR scorer disagrees with flip_scores"
+		print(f"lean IR check: max relative difference = {worst:.2e}", flush=True)
+		assert worst < (1e-5 if args.study == "timing" else 1e-3), "lean IR scorer disagrees with flip_scores"
 
 	# 2. arms, same evaluation seeds
 	arms = arms_for(has_ensemble, args.study)
