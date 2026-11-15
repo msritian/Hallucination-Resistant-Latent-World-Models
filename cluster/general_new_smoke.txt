@@ -1,0 +1,1 @@
+gns_pick_s70, PickCube-v1, new_grounded_pick_s70, grounded, 2, 6300
