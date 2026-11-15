@@ -1,6 +1,6 @@
 # Results: generalisation study, Part N (new tasks)
 
-Pre-registration: docs/preregistration_general.md. 12 grounded robots on 4 tasks never used in the commitment work
+Pre-registration: docs/preregistration_general.md (commit 3ebdf6e). 12 grounded robots on 4 tasks never used in the commitment work
 (PickCube, PokeCube, PullCubeTool, LiftPegUpright; seeds 70-72), all trained to final-eval success 1.00. Cluster 8687304,
 evaluation seeds 6300-6399, 100 episodes per arm. Analysis: `python -m src.tools.general_report N results/gn_*.tar.gz`.
 Every claim is reported.
