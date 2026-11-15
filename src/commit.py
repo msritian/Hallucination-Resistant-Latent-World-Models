@@ -50,6 +50,7 @@ GATES = ("oracle", *SCORES, "PE", "random")
 DECISION = ("act", "reg")                                 # decision oracles (confirmation study, see decision_scores)
 STEP = 0.05
 LEVELS = [1 + STEP * i for i in range(int((K_MAX - 1) / STEP) + 1)]   # commitment levels 1.00 ... 8.00
+ROBUST_GATES = ("IRs", "RIRo", "RIR", "RIRt", "RIRc")      # src/robust_regret.py (kept in sync with ROBUST)
 ETA = 0.05                                               # gain of the budget controller
 
 
@@ -70,6 +71,9 @@ def arms_for(has_ensemble: bool, study: str = "main") -> list:
 		for b in FRONTIER_BUDGETS:
 			arms += [Arm(f"{g}@{b}", gate=g, budget=b) for g in ("random", "oracle", *DECISION, "IR", "LBA", "PE")]
 		return arms + [Arm(f"{g}@4", gate=g, budget=4) for g in EXTRA]
+	if study == "robust":    # src/robust_regret.py: robust imagined regret and its oracles, budgets 4 and 6
+		from src.robust_regret import ROBUST
+		return [Arm(f"{g}@{b}", gate=g, budget=b) for b in (4, 6) for g in ROBUST]
 	if study == "general":   # docs/preregistration_general.md: new robots (stock TD-MPC2, new tasks)
 		return ([Arm(f"k{k}", k=k) for k in (1, 2, 4, 6)] + [Arm("random@4", gate="random", budget=4)]
 		        + [Arm(f"IR@{b}", gate="IR", budget=b, fast=True, fast2=True) for b in (2, 4, 6)]
@@ -463,6 +467,9 @@ def run_arm(agent, env, sim, arm: Arm, lba: dict, th: dict, episodes: int, seed_
 					k += 1
 			elif arm.fast:
 				k = commit_len((ir_fast if arm.fast2 else ir_only)(agent, obs, plan, lba["L"]), th[arm.gate][ctrl.level()], gen)
+			elif arm.gate in ROBUST_GATES:
+				from src.robust_regret import score as robust_score
+				k = commit_len(robust_score(agent, sim, obs, plan, lba, th["_rmaps"], arm.gate), th[arm.gate][ctrl.level()], gen)
 			elif arm.gate == "PE":
 				k = K_MAX
 				_, roll, _ = score_plan(agent, obs, plan, lba)
@@ -530,7 +537,7 @@ def main(argv=None):
 	p.add_argument("--episodes_file", default=None,
 	               help="episodes_<model>.pt saved by run_preflight (fits the LBA); if absent, 50 real episodes are "
 	                    "collected on seeds 2000-2049 (the protocol run_preflight used)")
-	p.add_argument("--study", choices=["main", "confirm", "frontier", "timing", "timing2", "general"], default="main")
+	p.add_argument("--study", choices=["main", "confirm", "frontier", "timing", "timing2", "general", "robust"], default="main")
 	p.add_argument("--dba_episodes", type=int, default=20, help="confirm: episodes that train the decision-aware audit")
 	p.add_argument("--dba_seed_start", type=int, default=6800)
 	p.add_argument("--out", required=True)
@@ -581,6 +588,30 @@ def main(argv=None):
 		torch.save(cal, out / "calibration_extra.pt")
 		(out / "thresholds_extra.json").write_text(json.dumps(ex, indent=1))
 		print(f"extra thresholds for {sorted(ex)}", flush=True)
+	if args.study == "robust" and not (out / "thresholds_robust.json").exists():
+		# reuses the frontier job's directory (lba.pkl, thresholds.json); calibrates the robust gates on the same seeds
+		from src import robust_regret as rr
+		obs = env.reset(seed=args.cal_seed_start)
+		from src.planning.audited_planner import AuditedPlanner, PlannerConfig
+		pl = AuditedPlanner(agent, PlannerConfig(horizon=H_LONG, score="standard"))
+		worst = 0.0
+		for c in range(5):                               # the r = 0 bound must reproduce IR
+			pl.act(obs, t0=c == 0)
+			plan = pl.last_plan.detach().cpu().clamp(-1, 1)
+			z0 = agent.model.encode(obs.to(next(agent.model.parameters()).device).view(1, -1), None)
+			ref = flip_scores(agent, z0, plan.to(z0.device), lba["L"])["IR"]
+			got = rr.bound(rr.parts(agent, obs, plan, lba["L"]), torch.zeros(lba["L"]))
+			worst = max(worst, float((got - ref).abs().max() / (ref.abs().max() + 1e-6)))
+			obs = env.step(plan[0])[0]
+		print(f"robust r=0 vs IR: max relative difference = {worst:.2e}", flush=True)
+		assert worst < 1e-3, "robust bound at r = 0 disagrees with IR"
+		rmaps, sc, raw = rr.calibrate(agent, env, sim, lba, args.cal_episodes, args.cal_seed_start)
+		thr = {g: {key(b): match(torch.cummax(s[:, :K_MAX - 1].float(), 1).values, b) for b in LEVELS}
+		       for g, s in sc.items() if g in rr.ROBUST}
+		torch.save(dict(scores=sc, **raw), out / "calibration_robust.pt")
+		(out / "robust_maps.json").write_text(json.dumps(rmaps, indent=1))
+		(out / "thresholds_robust.json").write_text(json.dumps(thr, indent=1))
+		print(f"robust radius maps: {json.dumps(rmaps)}", flush=True)
 	if (out / "thresholds.json").exists():
 		th = json.loads((out / "thresholds.json").read_text())
 	else:
@@ -591,6 +622,9 @@ def main(argv=None):
 		print(f"thresholds: {json.dumps(th)}", flush=True)
 	if (out / "thresholds_extra.json").exists():
 		th.update(json.loads((out / "thresholds_extra.json").read_text()))
+	if (out / "thresholds_robust.json").exists():
+		th.update(json.loads((out / "thresholds_robust.json").read_text()))
+		th["_rmaps"] = json.loads((out / "robust_maps.json").read_text())
 
 	if args.study in ("timing", "timing2", "general"):   # the lean scorer must give the IR of flip_scores
 		scorer = ir_only if args.study == "timing" else ir_fast
@@ -629,6 +663,8 @@ def main(argv=None):
 			sys.exit(85)
 	env.close()
 
+	if args.study == "robust":      # the directory also holds the confirmation and frontier arms
+		arms = arms_for(has_ensemble, "confirm") + arms_for(has_ensemble, "frontier") + arms
 	if args.study == "frontier":    # the directory also holds the confirmation arms (same robot, same seeds)
 		arms = arms_for(has_ensemble, "confirm") + arms
 	write_outputs(out, arms)
