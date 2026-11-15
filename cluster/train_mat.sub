@@ -34,7 +34,7 @@ gpus_maximum_capability = 12.0
 +WantGPULab = true
 +GPUJobLength = "short"
 request_cpus = 4
-request_memory = 6GB
+request_memory = 12GB
 request_disk = 20GB
 
 queue name, run, task, seed, steps, extra from $(queue_file)
