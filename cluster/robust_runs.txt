@@ -1,0 +1,12 @@
+rr_seed_grounded_push_s50, PushCube-v1, seed_grounded_push_s50, fr_seed_grounded_push_s50.tar.gz, 100, 10
+rr_seed_grounded_stack_s50, StackCube-v1, seed_grounded_stack_s50, fr_seed_grounded_stack_s50.tar.gz, 100, 10
+rr_seed_grounded_ycb_s50, PickSingleYCB-v1, seed_grounded_ycb_s50, fr_seed_grounded_ycb_s50.tar.gz, 100, 10
+rr_mat_grounded_push_s60, PushCube-v1, mat_grounded_push_s60, fr_mat_grounded_push_s60.tar.gz, 100, 10
+rr_mat_grounded_push_s61, PushCube-v1, mat_grounded_push_s61, fr_mat_grounded_push_s61.tar.gz, 100, 10
+rr_mat_grounded_push_s62, PushCube-v1, mat_grounded_push_s62, fr_mat_grounded_push_s62.tar.gz, 100, 10
+rr_mat_grounded_stack_s60, StackCube-v1, mat_grounded_stack_s60, fr_mat_grounded_stack_s60.tar.gz, 100, 10
+rr_mat_grounded_stack_s61, StackCube-v1, mat_grounded_stack_s61, fr_mat_grounded_stack_s61.tar.gz, 100, 10
+rr_mat_grounded_stack_s62, StackCube-v1, mat_grounded_stack_s62, fr_mat_grounded_stack_s62.tar.gz, 100, 10
+rr_mat_grounded_ycb_s60, PickSingleYCB-v1, mat_grounded_ycb_s60, fr_mat_grounded_ycb_s60.tar.gz, 100, 10
+rr_mat_grounded_ycb_s61, PickSingleYCB-v1, mat_grounded_ycb_s61, fr_mat_grounded_ycb_s61.tar.gz, 100, 10
+rr_mat_grounded_ycb_s62, PickSingleYCB-v1, mat_grounded_ycb_s62, fr_mat_grounded_ycb_s62.tar.gz, 100, 10

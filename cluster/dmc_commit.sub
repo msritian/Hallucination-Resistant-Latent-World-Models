@@ -1,0 +1,25 @@
+# DMC commitment study, one job per task. Usage: condor_submit dmc_commit.sub queue_file=dmc_commit_smoke.txt
+universe = container
+container_image = file:///staging/s/smittal39/tdmpc2_v3.sif
+executable = dmc_commit.sh
+arguments = $(task) $(episodes) $(cal_episodes)
+transfer_input_files = code_dmc/code.tar.gz
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+stream_output = True
+stream_error = True
+transfer_output_files = dcm.tar.gz
+transfer_output_remaps = "dcm.tar.gz = results/$(name).tar.gz"
+log = logs/$(name).log
+output = logs/$(name).$(Cluster).out
+error = logs/$(name).$(Cluster).err
+requirements = (HasCHTCStaging == true) && (TARGET.Machine =!= "gpu117.cm.cluster")
+request_gpus = 1
+gpus_minimum_capability = 7.0
+gpus_maximum_capability = 12.0
++WantGPULab = true
++GPUJobLength = "short"
+request_cpus = 4
+request_memory = 12GB
+request_disk = 20GB
+queue name, task, episodes, cal_episodes from $(queue_file)

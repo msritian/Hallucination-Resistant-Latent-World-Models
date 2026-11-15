@@ -1,0 +1,5 @@
+dpg_finger-turn-hard, finger-turn-hard, 30, 5, 8100, 0.5
+dpg_hopper-stand, hopper-stand, 30, 5, 8100, 0.5
+dpg_pendulum-swingup, pendulum-swingup, 30, 5, 8100, 0.5
+dpg_walker-run, walker-run, 30, 5, 8100, 0.5
+dpg_walker-walk, walker-walk, 30, 5, 8100, 0.5

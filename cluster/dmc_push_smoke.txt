@@ -1,0 +1,1 @@
+dpps_walker-walk, walker-walk, 1, 0, 1+4, 7100, 1.0

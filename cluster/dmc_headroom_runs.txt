@@ -1,0 +1,5 @@
+dhp_cheetah-run, cheetah-run, 30, 0, 1+4+6+8, 7000
+dhp_finger-turn-hard, finger-turn-hard, 30, 0, 1+4+6+8, 7000
+dhp_fish-swim, fish-swim, 30, 0, 1+4+6+8, 7000
+dhp_hopper-stand, hopper-stand, 30, 0, 1+4+6+8, 7000
+dhp_walker-run, walker-run, 30, 0, 1+4+6+8, 7000

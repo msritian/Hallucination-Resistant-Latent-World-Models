@@ -231,3 +231,4 @@ cluster/*.err
 /Research_WM.md
 /rvs_results/
 /results_local/
+cluster/code_*/
