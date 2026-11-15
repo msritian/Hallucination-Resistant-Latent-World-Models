@@ -9,7 +9,8 @@ tar -xzf code.tar.gz
 export PYTHONPATH=$PWD
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-4} MKL_NUM_THREADS=${MKL_NUM_THREADS:-4} LP_NUM_THREADS=${LP_NUM_THREADS:-2}
 mkdir -p g gen
-tar -xzf "/staging/s/smittal39/wm-results/$G.tar.gz" -C g run/final_model.pt
+if [ -f "$G.tar.gz" ]; then M="$G.tar.gz"; else M="/staging/s/smittal39/wm-results/$G.tar.gz"; fi   # local copy when shipped via OSDF (backfill route)
+tar -xzf "$M" -C g run/final_model.pt
 python -m src.commit --study general --task "$TASK" --run "$RUN" --model g/run/final_model.pt \
     --out gen --episodes "$EPS" --seed_start "$SEED" --cal_episodes 10 --max_hours 8
 status=$?
