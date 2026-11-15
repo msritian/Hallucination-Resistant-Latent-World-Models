@@ -1,0 +1,1 @@
+osg_smoke_stock_push_s60, stock, PushCube-v1, 60, 20000, --max_hours 1 --eval_freq 10000 --video_freq 2000000 --ckpt_freq 25000 --compile_mode default

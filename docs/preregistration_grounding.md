@@ -51,3 +51,12 @@ A training smoke (the 3 new variants, PushCube, 20k steps) checks the code bundl
 (cluster/grounding_train_runs.txt) and 36 evaluation jobs (cluster/grounding_general_runs.txt; the 9 grounded robots
 can start immediately). Analysis: `python -m src.tools.grounding_report results/ga_*.tar.gz`. Amendments only before
 results exist, committed with a reason.
+
+## Amendment 1 (2026-11-15, before any training job of this study started)
+
+Procedural only. The staging checkpoint mirror is named run_task_seed_steps, and four mirrors from an earlier study
+(stock_aux StackCube s60/s61, PickSingleYCB s60/s61) carry exactly the names of four new stock_aux runs, which would have
+resumed from those older models instead of training fresh. All 27 training jobs therefore run with `--mirror_dir none`
+(HTCondor's own checkpoints still save progress every 3-hour chunk). This also keeps staging under its file limit and
+lets the jobs use the wider pool (cluster/train_osg.sub: CHTC, backfill and OSPool; 16 GB). Recipe, seeds, claims and
+analysis are unchanged.
