@@ -43,7 +43,7 @@ def main(part: str, paths: list):
 		print(f"{tag:4s}{a + ' - ' + b:22s} {full:+.3f} [{lo:+.3f}, {hi:+.3f}]  better {w}, worse {l}  {verdict}")
 
 	print("\nclaims:" if part == "N" else "\ncomparisons:")
-	claimed = part in ("N", "stock")
+	claimed = part == "N"
 	show("IRl@4", "PE@4", "L1 " if claimed else "")
 	show("IRl@6", "PE@6", "L2 " if claimed else "")
 	show("IRl@4", "IR@4", "L3 " if claimed else "")
