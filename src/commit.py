@@ -74,6 +74,8 @@ def arms_for(has_ensemble: bool, study: str = "main") -> list:
 	if study == "robust":    # src/robust_regret.py: robust imagined regret and its oracles, budgets 4 and 6
 		from src.robust_regret import ROBUST
 		return [Arm(f"{g}@{b}", gate=g, budget=b) for b in (4, 6) for g in ROBUST]
+	if study == "adr":       # AdaReP-style gate (src/adarep.py), amendment 1 of docs/preregistration_live_ir.md
+		return [Arm(f"ADR@{b}", gate="ADR", budget=b) for b in (2, 4, 6)]
 	if study == "live":      # live IR (IR at the current real observation, while acting) vs PE and IR, budgets 2/4/6
 		return ([Arm(f"k{k}", k=k) for k in (1, 2, 4, 6)] + [Arm("random@4", gate="random", budget=4)]
 		        + [Arm(f"{g}@{b}", gate=g, budget=b) for g in ("IRl", "PE") for b in (2, 4, 6)])
@@ -461,7 +463,7 @@ def run_arm(agent, env, sim, arm: Arm, lba: dict, th: dict, episodes: int, seed_
 			sync()
 			t_b = time.perf_counter()
 			calls += 1
-			roll, pe_th, live = None, None, None
+			roll, pe_th, live, adr = None, None, None, None
 			if arm.gate is None:
 				k = arm.k
 			elif arm.gate == "random":
@@ -473,6 +475,11 @@ def run_arm(agent, env, sim, arm: Arm, lba: dict, th: dict, episodes: int, seed_
 			elif arm.gate in ROBUST_GATES:
 				from src.robust_regret import score as robust_score
 				k = commit_len(robust_score(agent, sim, obs, plan, lba, th["_rmaps"], arm.gate), th[arm.gate][ctrl.level()], gen)
+			elif arm.gate == "ADR":                  # decided while acting (src/adarep.py)
+				from src import adarep
+				k = K_MAX
+				_, roll, _ = score_plan(agent, obs, plan, lba)
+				adr = adarep.Tracker(agent, obs, roll.z[:, 0], plan, th["_adr_norm"], th["ADR"][ctrl.level()])
 			elif arm.gate == "IRl":                  # decided while acting, like PE (src/robust_regret.live_ir)
 				k = min(K_MAX, lba["L"] + 1)
 				live = [th["IRl"][ctrl.level()], 0.0]
@@ -504,6 +511,8 @@ def run_arm(agent, env, sim, arm: Arm, lba: dict, th: dict, episodes: int, seed_
 				if done or j >= k:
 					break
 				if pe_th is not None and not passes(latent_error(agent, obs, roll.z[j, 0]), pe_th, gen):
+					break
+				if adr is not None and not passes(adr.step(obs, j), adr.th, gen):
 					break
 				if live is not None:                 # running maximum, as commit_len does for plan-time scores
 					from src.robust_regret import live_ir
@@ -548,7 +557,7 @@ def main(argv=None):
 	p.add_argument("--episodes_file", default=None,
 	               help="episodes_<model>.pt saved by run_preflight (fits the LBA); if absent, 50 real episodes are "
 	                    "collected on seeds 2000-2049 (the protocol run_preflight used)")
-	p.add_argument("--study", choices=["main", "confirm", "frontier", "timing", "timing2", "general", "robust", "live"], default="main")
+	p.add_argument("--study", choices=["main", "confirm", "frontier", "timing", "timing2", "general", "robust", "live", "adr"], default="main")
 	p.add_argument("--dba_episodes", type=int, default=20, help="confirm: episodes that train the decision-aware audit")
 	p.add_argument("--dba_seed_start", type=int, default=6800)
 	p.add_argument("--out", required=True)
@@ -623,6 +632,15 @@ def main(argv=None):
 		(out / "robust_maps.json").write_text(json.dumps(rmaps, indent=1))
 		(out / "thresholds_robust.json").write_text(json.dumps(thr, indent=1))
 		print(f"robust radius maps: {json.dumps(rmaps)}", flush=True)
+	if args.study == "adr" and not (out / "thresholds_adr.json").exists():
+		from src import adarep
+		D, Lh = adarep.calibrate(agent, env, sim, lba, args.cal_episodes, args.cal_seed_start, K_MAX - 1)
+		norm = {"d": float(D.median()), "l": float(Lh.median())}
+		sc = adarep.scores_from(D, Lh, norm)
+		thr = {"ADR": {key(b): match(torch.cummax(sc.float(), 1).values, b) for b in LEVELS}, "_adr_norm": norm}
+		torch.save(dict(d=D, l=Lh, scores=sc), out / "calibration_adr.pt")
+		(out / "thresholds_adr.json").write_text(json.dumps(thr, indent=1))
+		print(f"AdaReP-style gate calibrated on {sc.shape[0]} plans, norm {norm}", flush=True)
 	if args.study == "live" and not (out / "thresholds_live.json").exists():
 		if (out / "thresholds_robust.json").exists():    # same quantity on the same calibration plans: IRs
 			thr = {"IRl": json.loads((out / "thresholds_robust.json").read_text())["IRs"]}
@@ -647,6 +665,8 @@ def main(argv=None):
 	if (out / "thresholds_robust.json").exists():
 		th.update(json.loads((out / "thresholds_robust.json").read_text()))
 		th["_rmaps"] = json.loads((out / "robust_maps.json").read_text())
+	if (out / "thresholds_adr.json").exists():
+		th.update(json.loads((out / "thresholds_adr.json").read_text()))
 	if (out / "thresholds_live.json").exists():
 		th.update(json.loads((out / "thresholds_live.json").read_text()))
 
@@ -691,7 +711,7 @@ def main(argv=None):
 		arms = arms_for(has_ensemble, "confirm") + arms_for(has_ensemble, "frontier") + arms
 	if args.study == "frontier":    # the directory also holds the confirmation arms (same robot, same seeds)
 		arms = arms_for(has_ensemble, "confirm") + arms
-	if args.study != "live":            # live arms are added to an earlier study's directory; keep its summary
+	if args.study not in ("live", "adr"):   # live arms are added to an earlier study's directory; keep its summary
 		write_outputs(out, arms)
 	print("done", flush=True)
 

@@ -23,7 +23,7 @@ def main(part: str, paths: list):
 			a: np.array([{r["seed"]: r["success"] for r in rows}[s] for s in seeds]) for a, rows in arms.items()}
 	names = sorted(S)
 	want = ["k1", "k2", "k4", "k6", "random@4", "IR@2", "IR@4", "IR@6", "IRs@4", "IRs@6", "PE@2", "PE@4", "PE@6",
-	        "IRl@2", "IRl@4", "IRl@6"]
+	        "IRl@2", "IRl@4", "IRl@6", "ADR@2", "ADR@4", "ADR@6"]
 	cols = [a for a in want if all(a in S[n] for n in names)]
 	print(f"part {part}: {len(names)} robots\n")
 	print(f"{'robot':30s} " + " ".join(f"{a:>7s}" for a in cols))
@@ -47,10 +47,12 @@ def main(part: str, paths: list):
 	show("IRl@4", "PE@4", "L1 " if claimed else "")
 	show("IRl@6", "PE@6", "L2 " if claimed else "")
 	show("IRl@4", "IR@4", "L3 " if claimed else "")
+	show("IRl@4", "ADR@4", "L4 " if claimed else "")
+	show("IRl@6", "ADR@6", "L5 " if claimed else "")
 	print("\nreported:")
 	for a, b in [("IRl@2", "k1"), ("IRl@2", "k2"), ("IRl@2", "PE@2"), ("IRl@2", "IR@2"), ("IRl@4", "k4"),
 	             ("IRl@6", "k6"), ("IRl@4", "random@4"), ("IRl@4", "IRs@4"), ("IRl@6", "IRs@6"), ("PE@2", "k2"),
-	             ("PE@6", "k6"), ("k1", "k4")]:
+	             ("PE@6", "k6"), ("ADR@4", "PE@4"), ("ADR@6", "PE@6"), ("ADR@2", "k1"), ("IRl@2", "ADR@2"), ("k1", "k4")]:
 		show(a, b)
 
 

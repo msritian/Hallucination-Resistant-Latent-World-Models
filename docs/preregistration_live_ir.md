@@ -52,3 +52,23 @@ point estimate would be reported as such, not reinterpreted.
 
 A smoke job (1 robot, 2 episodes per arm) checks the pipeline first. Smoke numbers are not used. Amendments only before
 the full jobs start, only for problems the smoke finds, committed with a reason.
+
+## Amendment 1 (2026-11-16, before any live-IR or AdaReP-style result was looked at)
+
+Reason: a closely related method appeared in a literature check after the full jobs were submitted: AdaReP (Cheng et
+al., arXiv 2606.23079, ICANN 2026) adapts when a world-model MPC replans, from the deviation of the real latent from
+the cached rollout and a local sensitivity estimate. PE is its special case without adaptation, so it must be compared
+directly. Three of the 12 Part N jobs had finished when this amendment was written; their outputs were not opened.
+
+**AdaReP-style gate ADR** (src/adarep.py): score s = log d + d̄ / median(d) + L̄ / median(L̂), d = ||z_real − ẑ_j|| (main
+head), L̂ = ||z_{t+1} − z_t|| / (||u_t|| + 1e-3), d̄ and L̄ means over the last W = 3 steps of the current plan; medians
+from the calibration plans. This is AdaReP's rule "d > ε0·exp(−α_d d̄)·exp(−α_L L̄)" in log form, with ε0 set by the
+budget controller like every gate's threshold, and α_d, α_L fixed by the median normalisation (the paper's TD-MPC2
+values were not available to us). Arms ADR@2/4/6, run as a second job on each robot's live-IR archive (same seeds,
+same calibration episodes), cluster/commit_adr.sub.
+
+**Added claims (Part N robots):**
+- **L4.** success(IRl@4) − success(ADR@4) > 0, 95% CI above 0.
+- **L5.** success(IRl@6) − success(ADR@6) > 0, 95% CI above 0.
+
+Reported: ADR@b − PE@b, ADR@2 − k1, IRl@2 − ADR@2, and the same on the check and stock sets.

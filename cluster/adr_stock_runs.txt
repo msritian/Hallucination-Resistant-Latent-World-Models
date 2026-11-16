@@ -1,0 +1,9 @@
+las_push_s40, PushCube-v1, seed_stock_push_s40, stock, lvs_push_s40.tar.gz, gen, 100, 6300
+las_push_s50, PushCube-v1, seed_stock_push_s50, stock, lvs_push_s50.tar.gz, gen, 100, 6300
+las_stack_s20, StackCube-v1, seed_stock_stack_s20, stock, lvs_stack_s20.tar.gz, gen, 100, 6300
+las_stack_s30, StackCube-v1, seed_stock_stack_s30, stock, lvs_stack_s30.tar.gz, gen, 100, 6300
+las_stack_s40, StackCube-v1, seed_stock_stack_s40, stock, lvs_stack_s40.tar.gz, gen, 100, 6300
+las_stack_s50, StackCube-v1, seed_stock_stack_s50, stock, lvs_stack_s50.tar.gz, gen, 100, 6300
+las_ycb_s20, PickSingleYCB-v1, seed_stock_ycb_s20, stock, lvs_ycb_s20.tar.gz, gen, 100, 6300
+las_ycb_s30, PickSingleYCB-v1, seed_stock_ycb_s30, stock, lvs_ycb_s30.tar.gz, gen, 100, 6300
+las_ycb_s40, PickSingleYCB-v1, seed_stock_ycb_s40, stock, lvs_ycb_s40.tar.gz, gen, 100, 6300
