@@ -1,0 +1,12 @@
+lv_pick_s70, PickCube-v1, new_grounded_pick_s70, grounded, gn_pick_s70.tar.gz, gen, 100, 6300
+lv_pick_s71, PickCube-v1, new_grounded_pick_s71, grounded, gn_pick_s71.tar.gz, gen, 100, 6300
+lv_pick_s72, PickCube-v1, new_grounded_pick_s72, grounded, gn_pick_s72.tar.gz, gen, 100, 6300
+lv_poke_s70, PokeCube-v1, new_grounded_poke_s70, grounded, gn_poke_s70.tar.gz, gen, 100, 6300
+lv_poke_s71, PokeCube-v1, new_grounded_poke_s71, grounded, gn_poke_s71.tar.gz, gen, 100, 6300
+lv_poke_s72, PokeCube-v1, new_grounded_poke_s72, grounded, gn_poke_s72.tar.gz, gen, 100, 6300
+lv_pull_s70, PullCubeTool-v1, new_grounded_pull_s70, grounded, gn_pull_s70.tar.gz, gen, 100, 6300
+lv_pull_s71, PullCubeTool-v1, new_grounded_pull_s71, grounded, gn_pull_s71.tar.gz, gen, 100, 6300
+lv_pull_s72, PullCubeTool-v1, new_grounded_pull_s72, grounded, gn_pull_s72.tar.gz, gen, 100, 6300
+lv_lift_s70, LiftPegUpright-v1, new_grounded_lift_s70, grounded, gn_lift_s70.tar.gz, gen, 100, 6300
+lv_lift_s71, LiftPegUpright-v1, new_grounded_lift_s71, grounded, gn_lift_s71.tar.gz, gen, 100, 6300
+lv_lift_s72, LiftPegUpright-v1, new_grounded_lift_s72, grounded, gn_lift_s72.tar.gz, gen, 100, 6300

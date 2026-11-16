@@ -81,6 +81,45 @@ def true_parts(agent, sim, plan: torch.Tensor, z0: torch.Tensor, L: int) -> dict
 	return dict(PE=pe.cpu(), IRs=irs.mean(0)[..., 0].cpu())
 
 
+@torch.no_grad()
+def live_ir(agent, obs: torch.Tensor, a: torch.Tensor) -> float:
+	"""Live IR: IR of plan action a at the robot's CURRENT real observation (encoder + critic only, no simulator).
+	Under the sequential commitment rule this reproduces the IRs oracle while acting (results_robust_regret.md)."""
+	model, cfg = agent.model, agent.cfg
+	dev = next(model.parameters()).device
+	z = model.encode(obs.to(dev).view(1, -1), None)
+	a = a.to(dev).view(1, -1)
+	g = (q_heads(model, z, pi_mean(model, z), cfg) - q_heads(model, z, a, cfg)).clamp(min=0)
+	return float(g.mean())
+
+
+@torch.no_grad()
+def irs_only(agent, sim, plan: torch.Tensor, L: int) -> torch.Tensor:
+	"""IRs [L] of one plan from a simulator copy (calibration only)."""
+	model, cfg = agent.model, agent.cfg
+	dev = next(model.parameters()).device
+	_, o = sim.rollout(sim.save(), plan.view(plan.shape[0], 1, -1))
+	z = model.encode(o[:L, 0].to(dev), None)
+	a = plan[1:L + 1].to(dev)
+	return (q_heads(model, z, pi_mean(model, z), cfg) - q_heads(model, z, a, cfg)).clamp(min=0).mean(0)[..., 0].cpu()
+
+
+def calibrate_live(agent, env, sim, L: int, episodes: int, seed_start: int) -> torch.Tensor:
+	"""IRs scores [N, L] on closed-loop k = 1 calibration episodes (the protocol of src.commit.calibrate)."""
+	from src.monitor import H_LONG
+	from src.planning.audited_planner import AuditedPlanner, PlannerConfig
+	planner = AuditedPlanner(agent, PlannerConfig(horizon=H_LONG, score="standard"))
+	S = []
+	for i in range(episodes):
+		obs, done, t = env.reset(seed=seed_start + i), False, 0
+		while not done:
+			action = planner.act(obs, t0=t == 0)
+			S.append(irs_only(agent, sim, planner.last_plan.detach().cpu(), L))
+			obs, _, done, _ = env.step(action)
+			t += 1
+	return torch.stack(S)
+
+
 def fit_radius(score: torch.Tensor, pe: torch.Tensor) -> dict:
 	"""Conditional Q-quantile of the latent error given a score: BINS quantile bins of the pooled score [N, L]."""
 	x, y = score.reshape(-1).float(), pe.reshape(-1).float()
